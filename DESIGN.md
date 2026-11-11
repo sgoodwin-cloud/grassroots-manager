@@ -73,8 +73,8 @@ Tuning values live in `TUNING` and `RATING` in `js/match.js` and `COUNT_BONUS` i
 | Measure | Result | Target |
 | --- | --- | --- |
 | Goals per game | 2.75 | 2.5–3.0 |
-| Home wins | 44.2% | 42–48% |
-| Draws | 23.3% | 22–28% |
+| Home wins | 44.1% | 42–48% |
+| Draws | 23.5% | 22–28% |
 | Shots per team | 12.3 (4.5 on target) | – |
 | Goalless draws | 6.2% | – |
 | Clear favourite (1.5+ points better) | won 65%, drew 20%, lost 15% | wins most, not always |
