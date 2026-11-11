@@ -1,0 +1,197 @@
+<title>Grassroots Engine Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one reading column, like a match programme's stats pages: verdict tiles, then the evidence, then a world to poke at. */
+:root {
+  --bg: #f3f6f2; --surface: #ffffff; --ink: #14201a; --muted: #5b6b62; --line: #d6ded7;
+  --pitch: #1f6b45; --pitch-soft: #e1efe6; --chalk: #ffffff;
+  --band-poor: #f3b5ae; --band-average: #f6d98f; --band-good: #a9dcb0; --band-excellent: #a8c8f5;
+  --ok: #1f6b45; --ok-soft: #dcefe2; --out: #a3301f; --out-soft: #f8dfda;
+  --up: #1f6b45; --down: #a3301f;
+  --display: 'Space Grotesk', 'Avenir Next', 'Segoe UI', sans-serif;
+  --body: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1612; --surface: #17211b; --ink: #e8efe9; --muted: #9aaba0; --line: #2b3a31;
+  --pitch: #5fc08a; --pitch-soft: #1d3327; --chalk: #0f1612;
+  --band-poor: #7a2e27; --band-average: #6d5516; --band-good: #23603a; --band-excellent: #264f86;
+  --ok: #6fd09a; --ok-soft: #1d3327; --out: #f08a7a; --out-soft: #3b1f1b;
+  --up: #5fc08a; --down: #f08a7a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f1612; --surface: #17211b; --ink: #e8efe9; --muted: #9aaba0; --line: #2b3a31;
+  --pitch: #5fc08a; --pitch-soft: #1d3327; --chalk: #0f1612;
+  --band-poor: #7a2e27; --band-average: #6d5516; --band-good: #23603a; --band-excellent: #264f86;
+  --ok: #6fd09a; --ok-soft: #1d3327; --out: #f08a7a; --out-soft: #3b1f1b;
+  --up: #5fc08a; --down: #f08a7a; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); }
+.wrap { max-width: 860px; margin: 0 auto; padding-block: 28px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 40px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.15 }
+h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.01em }
+h2 { font-size: 21px; font-weight: 600 }
+h3 { font-size: 16px; font-weight: 600 }
+p { margin: 0; max-width: 65ch }
+.muted { color: var(--muted) }
+.num { text-align: right; font-variant-numeric: tabular-nums }
+.eyebrow { font: 600 12px/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pitch) }
+header { display: flex; flex-direction: column; gap: 10px }
+section { display: flex; flex-direction: column; gap: 16px; min-width: 0 }
+.block { display: flex; flex-direction: column; gap: 10px; min-width: 0 }
+
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0 }
+.tile-name { font-weight: 500; color: var(--muted); font-size: 13px }
+.tile-value { font: 700 34px/1 var(--display); font-variant-numeric: tabular-nums }
+.tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px }
+.pill { font-weight: 600; border-radius: 999px; padding: 2px 9px; white-space: nowrap }
+.pill-ok { background: var(--ok-soft); color: var(--ok) }
+.pill-out { background: var(--out-soft); color: var(--out) }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0 28px; margin: 0 }
+.fact { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--line) }
+.fact dt { color: var(--muted) }
+.fact dd { margin: 0; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums }
+
+.chart svg { width: 100%; height: auto; display: block; max-width: 620px }
+.chart .grid { stroke: var(--line); stroke-width: 1 }
+.chart .axis { stroke: var(--muted); stroke-width: 1 }
+.chart .tick { fill: var(--muted); font: 11px var(--body); font-variant-numeric: tabular-nums }
+.chart .bar-fill { fill: var(--pitch); opacity: 0.55 }
+.chart .bar { cursor: pointer; outline: none }
+.chart .bar.is-on .bar-fill, .chart .bar:focus-visible .bar-fill { opacity: 1 }
+.readout { font-weight: 500; min-height: 1.5em }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums }
+th { text-align: left; font: 600 12px/1.2 var(--body); color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap }
+th.num { text-align: right }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap }
+caption { text-align: left; font: 600 13px var(--body); color: var(--muted); padding: 0 0 4px }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px }
+.scroll table tr:last-child td { border-bottom: 0 }
+
+button, input { font: inherit; color: inherit }
+.btn { background: var(--pitch); color: var(--chalk); border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 600; cursor: pointer; touch-action: manipulation }
+.btn.quiet { background: transparent; color: var(--pitch); border: 1px solid var(--pitch) }
+.btn:disabled { opacity: 0.6; cursor: default }
+:focus-visible { outline: 2px solid var(--pitch); outline-offset: 2px }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.controls label { font-weight: 500 }
+#seed { width: 9ch; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600 }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px }
+.tab { background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; touch-action: manipulation; color: var(--muted); font-weight: 500 }
+.tab.is-on { background: var(--pitch-soft); border-color: var(--pitch); color: var(--ink) }
+
+.league .pos { color: var(--muted); width: 2ch }
+.league .pts { font-weight: 700 }
+.league tr.zone-up td:first-child { box-shadow: inset 3px 0 0 var(--up) }
+.league tr.zone-down td:first-child { box-shadow: inset 3px 0 0 var(--down) }
+.league tr.is-selected td { background: var(--pitch-soft) }
+.club-link { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 500; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; touch-action: manipulation }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted) }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px }
+
+.squad td.attr { text-align: center; font-weight: 600; min-width: 34px; border-bottom-color: var(--surface); box-shadow: inset 0 0 0 1px var(--surface) }
+.squad .player { font-weight: 500 }
+.squad .ovr { font-weight: 700 }
+.band-poor { background: var(--band-poor) } .band-average { background: var(--band-average) }
+.band-good { background: var(--band-good) } .band-excellent { background: var(--band-excellent) }
+.swatch { display: inline-block; min-width: 30px; text-align: center; font-weight: 600; border-radius: 4px; padding: 1px 6px; color: var(--ink) }
+
+.match { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 14px }
+.scoreline { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: center; font: 600 16px/1.2 var(--display) }
+.scoreline .team { white-space: normal; overflow-wrap: anywhere }
+.scoreline .home { text-align: right }
+.scoreline .score { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap }
+.stat-row { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; font-size: 14px }
+.stat-row span:first-child { text-align: right } .stat-row span:last-child { text-align: left }
+.goals { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px }
+.goals li { display: flex; gap: 8px }
+.minute { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 3ch; text-align: right }
+@media (max-width: 560px) {
+  h1 { font-size: 25px } .tiles { grid-template-columns: 1fr } .tile-value { font-size: 30px }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Grassroots Manager · Milestone 1</div>
+    <h1>The match engine plays believable football</h1>
+    <p>This page is the proof for Milestone 1, not the game. It shows how the 90-minute match engine behaves over thousands of matches, and lets you generate a Sussex pyramid and look inside it.</p>
+  </header>
+
+  <section>
+    <h2>Does it hit the targets?</h2>
+    <div class="tiles" id="tiles"></div>
+    <p class="muted" id="sample-note"></p>
+    <div class="controls">
+      <button type="button" class="btn quiet" id="run-more">Simulate 10 fresh worlds</button>
+      <span class="muted">Runs about 5,300 new matches on this device and shows those figures instead.</span>
+    </div>
+
+    <div class="block">
+      <h3>Goals in a match</h3>
+      <div class="chart" id="histogram"></div>
+      <p class="readout" id="histogram-readout"></p>
+    </div>
+
+    <div class="block">
+      <h3>Other checks</h3>
+      <dl class="facts" id="facts"></dl>
+      <p class="muted">A clear favourite is a side whose best eleven is at least 1.5 rating points better than its opponent's.</p>
+    </div>
+
+    <div class="two">
+      <div class="block">
+        <h3>Gap between divisions</h3>
+        <div class="scroll"><table><thead><tr><th>Higher v lower club</th><th class="num">Won</th><th class="num">Drew</th><th class="num">Lost</th></tr></thead><tbody id="gap"></tbody></table></div>
+      </div>
+      <div class="block">
+        <h3>Formation balance</h3>
+        <div class="scroll"><table><thead><tr><th>Formation, against 4-4-2</th><th class="num">Points per game</th></tr></thead><tbody id="formations"></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>A generated world</h2>
+    <p>Each save will grow from a seed like this one. The same code always gives the same 48 clubs and 1,056 players. The tables show one full season with AI managers picking every team.</p>
+    <form class="controls" id="world-form">
+      <label for="seed">World code</label>
+      <input id="seed" maxlength="12" autocomplete="off" spellcheck="false">
+      <button type="submit" class="btn">Generate</button>
+      <button type="button" class="btn quiet" id="random-world">Random world</button>
+    </form>
+    <div class="tabs" id="division-tabs"></div>
+    <div class="scroll"><table class="league"><thead><tr><th class="num">#</th><th>Club</th><th class="num">P</th><th class="num">W</th><th class="num">D</th><th class="num">L</th><th class="num">GF</th><th class="num">GA</th><th class="num">GD</th><th class="num">Pts</th></tr></thead><tbody id="table-body"></tbody></table></div>
+    <div class="legend"><span><i style="background:var(--up)"></i>Promotion places</span><span><i style="background:var(--down)"></i>Relegation places</span><span>Tap a club to see its squad.</span></div>
+  </section>
+
+  <section>
+    <h2 id="squad-title">Squad</h2>
+    <p class="muted" id="squad-note"></p>
+    <div class="legend">
+      <span><span class="swatch band-poor">1–5</span> Poor</span><span><span class="swatch band-average">6–10</span> Average</span>
+      <span><span class="swatch band-good">11–15</span> Good</span><span><span class="swatch band-excellent">16–20</span> Excellent</span>
+    </div>
+    <div class="block" id="squad"></div>
+    <p class="muted">Ovr is the rating in the player's own position, worked out from his attributes. Pot is his hidden ceiling, shown here only for checking.</p>
+  </section>
+
+  <section>
+    <h2>One match</h2>
+    <div class="match">
+      <div class="scoreline" id="match-score"></div>
+      <div id="match-stats"></div>
+      <ul class="goals" id="match-goals"></ul>
+    </div>
+    <div class="controls"><button type="button" class="btn" id="play-again">Play another match</button><span class="muted">Against the next club in the division, alternating home and away.</span></div>
+  </section>
+</div>
+
+<script>window.__BAKED__ = /*__BAKED__*/null;</script>
+<script>/*__BUNDLE__*/</script>

@@ -1,0 +1,15 @@
+{
+  "name": "grassroots-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Grassroots Manager: a stripped-back football manager for the phone, set in a fictional Sussex pyramid.",
+  "scripts": {
+    "test": "node --test",
+    "calibrate": "node tools/calibrate.js",
+    "build:stats": "node tools/build-stats.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
