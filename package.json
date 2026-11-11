@@ -7,9 +7,14 @@
   "scripts": {
     "test": "node --test",
     "calibrate": "node tools/calibrate.js",
-    "build:stats": "node tools/build-stats.js"
+    "build:stats": "node tools/build-stats.js",
+    "build:preview": "node tools/build-preview.js",
+    "playtest": "python3 tools/playtest.py",
+    "update-test": "python3 tools/update-test.py"
   },
   "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "esbuild": "^0.28.2"
   }
 }

@@ -24,8 +24,9 @@ export function roundRobin(clubIds, rng) {
     for (let i = 0; i < n / 2; i++) {
       const a = order[i];
       const b = order[n - 1 - i];
-      // Alternate venues so nobody gets a long run at home or away.
-      const flip = i === 0 ? round % 2 === 1 : (round + i) % 2 === 1;
+      // Alternate venues so nobody gets a long run at home or away: the fixed
+      // club alternates by round, the other pairings by their place in the ring.
+      const flip = i === 0 ? round % 2 === 1 : i % 2 === 1;
       fixtures.push(flip ? { home: b, away: a } : { home: a, away: b });
     }
     firstHalf.push(fixtures);
@@ -78,10 +79,41 @@ export function tableFromResults(clubIds, results, nameOf = (id) => id) {
   return table;
 }
 
+/** The 22 rounds of fixtures for one division in one season. Worked out from the seed, never stored. */
+export function fixturesFor(world, season, divisionIndex) {
+  const rng = makeRng(hashSeed('fixtures', world.seed, season, divisionIndex));
+  return roundRobin(world.divisions[divisionIndex].clubIds, rng);
+}
+
+/**
+ * Play one fixture and return the result as it is stored.
+ * lineupOf(clubId) gives each side's line-up. roundIndex counts from 0.
+ */
+export function playFixture(world, season, divisionIndex, roundIndex, fixture, lineupOf) {
+  const { home, away } = fixture;
+  const result = simulateMatch({
+    home: { clubId: home, name: clubById(world, home).name, lineup: lineupOf(home) },
+    away: { clubId: away, name: clubById(world, away).name, lineup: lineupOf(away) },
+    seed: hashSeed(world.seed, season, divisionIndex, roundIndex, home, away),
+  });
+  return {
+    divisionIndex,
+    round: roundIndex + 1,
+    homeId: result.homeId,
+    awayId: result.awayId,
+    homeGoals: result.homeGoals,
+    awayGoals: result.awayGoals,
+    goals: result.goals,
+    stats: result.stats,
+    players: result.players,
+    potm: result.potm,
+  };
+}
+
 /**
  * Play a full season in every division with AI managers picking the teams.
  * Returns { fixtures, results } where each result carries its division and round.
- * M1 only: there is no development, transfers or promotion between seasons yet.
+ * There is no development, transfers or promotion between seasons yet.
  */
 export function simulateSeason(world, season = 1) {
   const lineups = new Map(
@@ -89,30 +121,13 @@ export function simulateSeason(world, season = 1) {
   );
   const results = [];
   const fixtures = [];
-
   for (const division of world.divisions) {
-    const rng = makeRng(hashSeed('fixtures', world.seed, season, division.index));
-    const rounds = roundRobin(division.clubIds, rng);
-    rounds.forEach((round, roundIndex) => {
-      for (const { home, away } of round) {
-        fixtures.push({ divisionIndex: division.index, round: roundIndex + 1, home, away });
-        const result = simulateMatch({
-          home: { clubId: home, name: clubById(world, home).name, lineup: lineups.get(home) },
-          away: { clubId: away, name: clubById(world, away).name, lineup: lineups.get(away) },
-          seed: hashSeed(world.seed, season, division.index, roundIndex, home, away),
-        });
-        results.push({
-          divisionIndex: division.index,
-          round: roundIndex + 1,
-          homeId: result.homeId,
-          awayId: result.awayId,
-          homeGoals: result.homeGoals,
-          awayGoals: result.awayGoals,
-          goals: result.goals,
-          stats: result.stats,
-          players: result.players,
-          potm: result.potm,
-        });
+    fixturesFor(world, season, division.index).forEach((round, roundIndex) => {
+      for (const fixture of round) {
+        fixtures.push({ divisionIndex: division.index, round: roundIndex + 1, ...fixture });
+        results.push(
+          playFixture(world, season, division.index, roundIndex, fixture, (id) => lineups.get(id)),
+        );
       }
     });
   }

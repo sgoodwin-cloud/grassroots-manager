@@ -83,7 +83,12 @@ test('fixtures: 22 rounds, everyone plays once a round, each pair meets home and
     }
   }
   assert.equal(pairs.size, 12 * 11);
-  for (const id of ids) assert.equal(homeCount[id], 11);
+  for (const id of ids) {
+    assert.equal(homeCount[id], 11);
+    // Nobody plays more than three in a row at home or away.
+    const venues = rounds.map((round) => (round.find((f) => f.home === id || f.away === id).home === id ? 'H' : 'A')).join('');
+    assert.ok(!/HHHH|AAAA/.test(venues), venues);
+  }
 });
 
 test('the table is worked out from results and adds up', () => {
