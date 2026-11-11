@@ -124,3 +124,45 @@ test('a simulated season is complete and repeatable', () => {
     for (let i = 1; i < table.length; i++) assert.ok(table[i - 1].points >= table[i].points);
   }
 });
+
+test('every player gets a stat line and a rating, and the lines add up to the match', () => {
+  for (let i = 0; i < 100; i++) {
+    const r = simulateMatch({ home: side(clubA), away: side(clubB), seed: `lines-${i}` });
+    assert.equal(r.players.length, 2);
+    const everyone = r.players.flat();
+    assert.equal(everyone.length, 22);
+    r.players.forEach((lines, s) => {
+      const goals = s === 0 ? r.homeGoals : r.awayGoals;
+      const sum = (key) => lines.reduce((t, line) => t + line[key], 0);
+      assert.equal(lines.length, 11);
+      assert.equal(sum('g'), goals);
+      assert.equal(sum('a'), r.goals.filter((g) => g.side === s && g.assistId).length);
+      assert.equal(sum('sh'), r.stats[s].shots);
+      assert.equal(sum('sot'), r.stats[s].onTarget);
+      // Every shot on target the other side had was either a goal or a save.
+      const theirGoals = s === 0 ? r.awayGoals : r.homeGoals;
+      assert.equal(sum('sv'), r.stats[1 - s].onTarget - theirGoals);
+      for (const line of lines) {
+        assert.equal(line.min, 90);
+        assert.ok(line.rating >= 1 && line.rating <= 10);
+        assert.equal(line.rating, Math.round(line.rating * 10) / 10);
+        assert.ok(!('delta' in line));
+        if (line.role !== 'GK') assert.equal(line.sv, 0);
+      }
+    });
+    const best = Math.max(...everyone.map((line) => line.rating));
+    assert.equal(everyone.find((line) => line.id === r.potm).rating, best);
+  }
+});
+
+test('a goal lifts the scorer and the result moves everyone', () => {
+  let scorers = 0, scorerTotal = 0, others = 0, otherTotal = 0;
+  for (let i = 0; i < 300; i++) {
+    const r = simulateMatch({ home: side(clubA), away: side(clubB), seed: `lift-${i}` });
+    for (const line of r.players.flat()) {
+      if (line.g > 0) { scorers++; scorerTotal += line.rating; }
+      else { others++; otherTotal += line.rating; }
+    }
+  }
+  assert.ok(scorerTotal / scorers > otherTotal / others + 0.7);
+});

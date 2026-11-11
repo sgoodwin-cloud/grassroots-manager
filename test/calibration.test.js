@@ -51,3 +51,30 @@ test('no formation is clearly better or worse than 4-4-2', () => {
     assert.ok(Math.abs(value - ppg['4-4-2']) < 0.06, `${formation}: ${value.toFixed(3)} v ${ppg['4-4-2'].toFixed(3)}`);
   }
 });
+
+test('player ratings follow the Football Manager scale: about 6.8, no position favoured', () => {
+  assert.ok(inTarget(stats.ratingMean, TARGETS.ratingMean), `average rating ${stats.ratingMean.toFixed(2)}`);
+  assert.ok(
+    stats.ratingRoleSpread <= TARGETS.ratingRoleSpread,
+    Object.entries(stats.ratingByRole).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(' '),
+  );
+  // Excellent and poor games both happen, and neither is common.
+  assert.ok(stats.ratingHigh > 0.02 && stats.ratingHigh < 0.1, `8.0+ ${(stats.ratingHigh * 100).toFixed(1)}%`);
+  assert.ok(stats.ratingLow > 0.02 && stats.ratingLow < 0.12, `under 6.0 ${(stats.ratingLow * 100).toFixed(1)}%`);
+  assert.ok(stats.ratingPerfect < 0.005);
+});
+
+test('ratings reflect results and ability without being decided by either', () => {
+  const gap = stats.ratingWinners - stats.ratingLosers;
+  assert.ok(gap > 0.4 && gap < 1.2, `winners v losers ${gap.toFixed(2)}`);
+  assert.ok(stats.abilityCorrelation > 0.35 && stats.abilityCorrelation < 0.9);
+  // Player of the match is not always a striker.
+  assert.ok(stats.potmShare.ATT < 0.55);
+  for (const role of ['GK', 'DEF', 'MID']) assert.ok(stats.potmShare[role] > 0.08, role);
+});
+
+test('season leaders look right for a 22-game season', () => {
+  assert.ok(stats.avgTopScorerGoals > 11 && stats.avgTopScorerGoals < 26);
+  assert.ok(stats.avgTopAssists > 5 && stats.avgTopAssists < 16);
+  assert.ok(stats.avgTopRating > 7.0 && stats.avgTopRating < 8.0);
+});

@@ -42,7 +42,7 @@ header { display: flex; flex-direction: column; gap: 10px }
 section { display: flex; flex-direction: column; gap: 16px; min-width: 0 }
 .block { display: flex; flex-direction: column; gap: 10px; min-width: 0 }
 
-.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px }
 .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0 }
 .tile-name { font-weight: 500; color: var(--muted); font-size: 13px }
 .tile-value { font: 700 34px/1 var(--display); font-variant-numeric: tabular-nums }
@@ -52,6 +52,7 @@ section { display: flex; flex-direction: column; gap: 16px; min-width: 0 }
 .pill-out { background: var(--out-soft); color: var(--out) }
 
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0 28px; margin: 0 }
+.facts.one { grid-template-columns: 1fr }
 .fact { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--line) }
 .fact dt { color: var(--muted) }
 .fact dd { margin: 0; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums }
@@ -102,6 +103,17 @@ button, input { font: inherit; color: inherit }
 .band-good { background: var(--band-good) } .band-excellent { background: var(--band-excellent) }
 .swatch { display: inline-block; min-width: 30px; text-align: center; font-weight: 600; border-radius: 4px; padding: 1px 6px; color: var(--ink) }
 
+.rating { display: inline-block; min-width: 2.6em; text-align: center; font-weight: 700; border-radius: 4px; padding: 1px 5px; font-variant-numeric: tabular-nums }
+.small { font-size: 12.5px }
+.three { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px }
+.leaders td { white-space: normal; vertical-align: middle } .leaders .player { font-weight: 600 }
+.leaders .lead-value { font: 700 18px var(--display) } .leaders .lead-value .rating { font: 700 14px var(--body) }
+.sort { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; white-space: nowrap }
+.sort.is-on { color: var(--pitch) }
+.form { display: flex; gap: 3px } .form .rating { min-width: 2.3em; font-size: 12px; font-weight: 600; padding: 1px 3px }
+.stats-table .player { font-weight: 500 } tr.unused td { color: var(--muted) }
+.ratings td { white-space: normal } .ratings td:first-child, .ratings td:last-child { white-space: nowrap }
+.potm { color: var(--pitch); font-weight: 600; font-size: 12.5px; white-space: nowrap }
 .match { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 14px }
 .scoreline { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: center; font: 600 16px/1.2 var(--display) }
 .scoreline .team { white-space: normal; overflow-wrap: anywhere }
@@ -113,7 +125,7 @@ button, input { font: inherit; color: inherit }
 .goals li { display: flex; gap: 8px }
 .minute { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 3ch; text-align: right }
 @media (max-width: 560px) {
-  h1 { font-size: 25px } .tiles { grid-template-columns: 1fr } .tile-value { font-size: 30px }
+  h1 { font-size: 25px } .tile-value { font-size: 30px }
 }
 </style>
 
@@ -145,6 +157,15 @@ button, input { font: inherit; color: inherit }
       <p class="muted">A clear favourite is a side whose best eleven is at least 1.5 rating points better than its opponent's.</p>
     </div>
 
+    <div class="block">
+      <h3>Player ratings</h3>
+      <p>Every player starts a match at 6.6 and moves with what he does: goals, assists, key passes, tackles and saves lift him; lost balls, missed shots and goals conceded pull him down. The scale is Football Manager's, where about 6.8 is an average game.</p>
+      <div class="two">
+        <div class="scroll"><table><thead><tr><th>Position</th><th class="num">Average rating</th><th class="num">Player of the match</th></tr></thead><tbody id="rating-roles"></tbody></table></div>
+        <dl class="facts one" id="rating-facts"></dl>
+      </div>
+    </div>
+
     <div class="two">
       <div class="block">
         <h3>Gap between divisions</h3>
@@ -169,6 +190,8 @@ button, input { font: inherit; color: inherit }
     <div class="tabs" id="division-tabs"></div>
     <div class="scroll"><table class="league"><thead><tr><th class="num">#</th><th>Club</th><th class="num">P</th><th class="num">W</th><th class="num">D</th><th class="num">L</th><th class="num">GF</th><th class="num">GA</th><th class="num">GD</th><th class="num">Pts</th></tr></thead><tbody id="table-body"></tbody></table></div>
     <div class="legend"><span><i style="background:var(--up)"></i>Promotion places</span><span><i style="background:var(--down)"></i>Relegation places</span><span>Tap a club to see its squad.</span></div>
+    <div class="three" id="leaders"></div>
+    <p class="muted" id="leaders-note"></p>
   </section>
 
   <section>
@@ -180,6 +203,11 @@ button, input { font: inherit; color: inherit }
     </div>
     <div class="block" id="squad"></div>
     <p class="muted">Ovr is the rating in the player's own position, worked out from his attributes. Pot is his hidden ceiling, shown here only for checking.</p>
+    <div class="block">
+      <h3>Season stats</h3>
+      <div id="club-stats"></div>
+      <p class="muted">Tap a column heading to sort. AI managers pick the same eleven every week for now, so half the squad has not played; fatigue and injuries change that in Milestone 3.</p>
+    </div>
   </section>
 
   <section>
@@ -189,6 +217,7 @@ button, input { font: inherit; color: inherit }
       <div id="match-stats"></div>
       <ul class="goals" id="match-goals"></ul>
     </div>
+    <div class="two" id="match-ratings"></div>
     <div class="controls"><button type="button" class="btn" id="play-again">Play another match</button><span class="muted">Against the next club in the division, alternating home and away.</span></div>
   </section>
 </div>

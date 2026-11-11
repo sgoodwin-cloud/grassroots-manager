@@ -110,6 +110,8 @@ export function simulateSeason(world, season = 1) {
           awayGoals: result.awayGoals,
           goals: result.goals,
           stats: result.stats,
+          players: result.players,
+          potm: result.potm,
         });
       }
     });

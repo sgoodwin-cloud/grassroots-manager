@@ -7,6 +7,7 @@ import { simulateMatch } from '../js/match.js';
 import { bestLineup, teamStrength } from '../js/team.js';
 import { overall, attributeBand, OUTFIELD_ATTRS, GK_ATTRS, ATTR_LABELS } from '../js/player.js';
 import { measure, TARGETS, inTarget } from '../js/calibrate.js';
+import { playerTotals, leaders, minAppsForRating } from '../js/stats.js';
 
 const baked = window.__BAKED__;
 const $ = (id) => document.getElementById(id);
@@ -20,6 +21,7 @@ function renderCalibration(stats, label) {
     { name: 'Goals per game', value: stats.goalsPerGame.toFixed(2), target: TARGETS.goalsPerGame, raw: stats.goalsPerGame, range: `${TARGETS.goalsPerGame[0]} to ${TARGETS.goalsPerGame[1]}` },
     { name: 'Home wins', value: pct(stats.homeWin), target: TARGETS.homeWin, raw: stats.homeWin, range: `${pct(TARGETS.homeWin[0], 0)} to ${pct(TARGETS.homeWin[1], 0)}` },
     { name: 'Draws', value: pct(stats.draw), target: TARGETS.draw, raw: stats.draw, range: `${pct(TARGETS.draw[0], 0)} to ${pct(TARGETS.draw[1], 0)}` },
+    { name: 'Average player rating', value: stats.ratingMean.toFixed(2), target: TARGETS.ratingMean, raw: stats.ratingMean, range: `${TARGETS.ratingMean[0]} to ${TARGETS.ratingMean[1]}` },
   ];
   $('tiles').innerHTML = tiles
     .map((t) => {
@@ -44,7 +46,25 @@ function renderCalibration(stats, label) {
   ];
   $('facts').innerHTML = rows.map(([k, v]) => `<div class="fact"><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('');
   renderHistogram(stats);
+
+  const roles = { GK: 'Goalkeepers', DEF: 'Defenders', MID: 'Midfielders', ATT: 'Attackers' };
+  $('rating-roles').innerHTML = Object.keys(roles)
+    .map((k) => `<tr><td>${roles[k]}</td><td class="num">${stats.ratingByRole[k].toFixed(2)}</td><td class="num">${pct(stats.potmShare[k], 0)}</td></tr>`)
+    .join('');
+  const ratingRows = [
+    ['Rated 8.0 or more', pct(stats.ratingHigh)],
+    ['Rated under 6.0', pct(stats.ratingLow)],
+    ['Winning side v losing side', `${stats.ratingWinners.toFixed(2)} v ${stats.ratingLosers.toFixed(2)}`],
+    ['Division top scorer', `${stats.avgTopScorerGoals.toFixed(1)} goals`],
+    ['Most assists in a division', stats.avgTopAssists.toFixed(1)],
+    ['Best season average', stats.avgTopRating.toFixed(2)],
+    ['Link between ability and average rating', stats.abilityCorrelation.toFixed(2)],
+  ];
+  $('rating-facts').innerHTML = ratingRows.map(([k, v]) => `<div class="fact"><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('');
 }
+
+const ratingBand = (r) => (r >= 8 ? 'excellent' : r >= 7 ? 'good' : r >= 6 ? 'average' : 'poor');
+const ratingChip = (r, digits = 1) => `<span class="rating band-${ratingBand(r)}">${r.toFixed(digits)}</span>`;
 
 function renderHistogram(stats) {
   const shares = stats.goalsHistogram.map((n) => n / stats.matches);
@@ -114,10 +134,13 @@ $('run-more').addEventListener('click', () => {
 // ---------- World ----------
 
 let world, season, selectedDivision = 3, selectedClub = null, matchCount = 0;
+let playersById = new Map(), statSort = { key: 'rating', dir: -1 };
+const playerName = (id) => playersById.get(id).name;
 
 function loadWorld(seed) {
   world = generateWorld(seed);
   season = simulateSeason(world, 1);
+  playersById = new Map(world.players.map((p) => [p.id, p]));
   selectedDivision = 3;
   selectedClub = world.divisions[3].clubIds[0];
   matchCount = 0;
@@ -146,6 +169,47 @@ function renderTable() {
         <td class="num">${row.gf}</td><td class="num">${row.ga}</td><td class="num">${row.gd > 0 ? '+' : ''}${row.gd}</td><td class="num pts">${row.points}</td></tr>`;
     })
     .join('');
+  renderLeaders();
+}
+
+function renderLeaders() {
+  const results = season.results.filter((r) => r.divisionIndex === selectedDivision);
+  const totals = playerTotals(results);
+  const minApps = minAppsForRating(results);
+  const lists = [
+    { key: 'goals', title: 'Goals', value: (t) => t.goals },
+    { key: 'assists', title: 'Assists', value: (t) => t.assists },
+    { key: 'rating', title: 'Average rating', value: (t) => ratingChip(t.rating, 2) },
+  ];
+  $('leaders').innerHTML = lists
+    .map((list) => {
+      const rows = leaders(totals, list.key, { minApps, nameOf: playerName })
+        .map((t, i) => `<tr><td class="num pos">${i + 1}</td><td><span class="player">${esc(playerName(t.id))}</span><br><span class="muted small">${esc(clubById(world, t.clubId).name)} · ${t.apps} apps</span></td><td class="num lead-value">${list.value(t)}</td></tr>`)
+        .join('');
+      return `<div class="block"><h3>${list.title}</h3><div class="scroll"><table class="leaders"><tbody>${rows}</tbody></table></div></div>`;
+    })
+    .join('');
+  $('leaders-note').textContent = `Top ten in ${world.divisions[selectedDivision].name}. Average rating counts players with at least ${minApps} appearances.`;
+}
+
+const STAT_COLUMNS = [
+  { key: 'apps', label: 'Apps' }, { key: 'goals', label: 'Gls' }, { key: 'assists', label: 'Ast' },
+  { key: 'rating', label: 'Avg' }, { key: 'best', label: 'Best' }, { key: 'potm', label: 'PoM' },
+];
+
+function renderClubStats() {
+  const club = clubById(world, selectedClub);
+  const totals = playerTotals(season.results.filter((r) => r.homeId === club.id || r.awayId === club.id));
+  const rows = squadOf(world, club.id)
+    .map((p) => ({ p, t: totals.get(p.id) || { apps: 0, goals: 0, assists: 0, rating: 0, best: 0, potm: 0, form: [] } }))
+    .sort((a, b) => statSort.dir * (a.t[statSort.key] - b.t[statSort.key]) || b.t.apps - a.t.apps || a.p.name.localeCompare(b.p.name));
+  const head = STAT_COLUMNS.map((c) => `<th class="num"><button type="button" class="sort ${statSort.key === c.key ? 'is-on' : ''}" data-sort="${c.key}">${c.label}${statSort.key === c.key ? (statSort.dir < 0 ? ' ↓' : ' ↑') : ''}</button></th>`).join('');
+  const body = rows
+    .map(({ p, t }) => t.apps
+      ? `<tr><td class="player">${esc(p.name)}</td><td>${p.pos}</td><td class="num">${t.apps}</td><td class="num">${t.goals}</td><td class="num">${t.assists}</td><td class="num">${ratingChip(t.rating, 2)}</td><td class="num">${t.best.toFixed(1)}</td><td class="num">${t.potm}</td><td class="form">${t.form.map((r) => ratingChip(r)).join('')}</td></tr>`
+      : `<tr class="unused"><td class="player">${esc(p.name)}</td><td>${p.pos}</td><td class="num">0</td><td class="num muted" colspan="6">Did not play</td></tr>`)
+    .join('');
+  $('club-stats').innerHTML = `<div class="scroll"><table class="stats-table"><thead><tr><th>Player</th><th>Pos</th>${head}<th>Last five</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function attrCell(value) {
@@ -173,6 +237,7 @@ function renderSquad() {
   $('squad').innerHTML =
     squadTable(outfield, OUTFIELD_ATTRS, 'Outfield players') +
     squadTable(squad.filter((p) => p.pos === 'GK'), GK_ATTRS, 'Goalkeepers');
+  renderClubStats();
 }
 
 function playMatch() {
@@ -185,7 +250,7 @@ function playMatch() {
   const away = atHome ? opponent : club;
   const r = simulateMatch({ home: side(home), away: side(away), seed: `friendly-${world.seed}-${club.id}-${matchCount}` });
   matchCount++;
-  const nameOf = (id) => world.players.find((p) => p.id === id).name;
+  const nameOf = playerName;
   $('match-score').innerHTML = `<span class="team home">${esc(home.name)}</span><span class="score">${r.homeGoals} – ${r.awayGoals}</span><span class="team">${esc(away.name)}</span>`;
   $('match-stats').innerHTML = [
     ['Possession', `${r.stats[0].possession}%`, `${r.stats[1].possession}%`],
@@ -195,6 +260,11 @@ function playMatch() {
   $('match-goals').innerHTML = r.goals.length
     ? r.goals.map((g) => `<li class="${g.side === 0 ? 'goal-home' : 'goal-away'}"><span class="minute">${g.minute}'</span> <span><strong>${esc(nameOf(g.playerId))}</strong>${g.assistId ? ` <span class="muted">(${esc(nameOf(g.assistId))})</span>` : ''} <span class="muted">for ${esc((g.side === 0 ? home : away).name)}</span></span></li>`).join('')
     : '<li class="muted">No goals.</li>';
+  $('match-ratings').innerHTML = [home, away]
+    .map((c, s) => `<div class="scroll"><table class="ratings"><caption>${esc(c.name)}</caption><tbody>${r.players[s]
+      .map((line) => `<tr><td class="muted">${line.role}</td><td class="player">${esc(nameOf(line.id))}${line.id === r.potm ? ' <span class="potm" title="Player of the match">★ Player of the match</span>' : ''}</td><td class="num muted small">${[line.g ? `${line.g} goal${line.g > 1 ? 's' : ''}` : '', line.a ? `${line.a} assist${line.a > 1 ? 's' : ''}` : '', line.sv ? `${line.sv} save${line.sv > 1 ? 's' : ''}` : '', line.tk ? `${line.tk} tackle${line.tk > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ')}</td><td class="num">${ratingChip(line.rating)}</td></tr>`)
+      .join('')}</tbody></table></div>`)
+    .join('');
 }
 
 document.addEventListener('click', (event) => {
@@ -203,6 +273,12 @@ document.addEventListener('click', (event) => {
     selectedDivision = Number(tab.dataset.division);
     renderDivisionTabs();
     renderTable();
+    return;
+  }
+  const sort = event.target.closest('[data-sort]');
+  if (sort) {
+    statSort = { key: sort.dataset.sort, dir: statSort.key === sort.dataset.sort ? -statSort.dir : -1 };
+    renderClubStats();
     return;
   }
   const link = event.target.closest('[data-club]');

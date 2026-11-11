@@ -6,15 +6,34 @@ import { generateWorld, squadOf, clubById } from './world.js';
 import { simulateSeason, divisionTable } from './league.js';
 import { simulateMatch } from './match.js';
 import { bestLineup, pickXI, lineupQuality, FORMATIONS } from './team.js';
+import { playerTotals, leaders } from './stats.js';
+import { overall } from './player.js';
 
 // Design-doc targets (min, max).
 export const TARGETS = {
   goalsPerGame: [2.5, 3.0],
   homeWin: [0.42, 0.48],
   draw: [0.22, 0.28],
+  // Player ratings, following Football Manager: the average game is about 6.8.
+  ratingMean: [6.7, 6.9],
+  // No position's average may sit further than this from the overall average.
+  ratingRoleSpread: 0.1,
 };
 
 export const inTarget = (value, [lo, hi]) => value >= lo && value <= hi;
+
+function pearson(pairs) {
+  const n = pairs.length;
+  const mx = pairs.reduce((t, p) => t + p[0], 0) / n;
+  const my = pairs.reduce((t, p) => t + p[1], 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (const [x, y] of pairs) {
+    sxy += (x - mx) * (y - my);
+    sxx += (x - mx) ** 2;
+    syy += (y - my) ** 2;
+  }
+  return sxy / Math.sqrt(sxx * syy);
+}
 
 /** Simulate `worldCount` worlds for one season each and total up what happened. */
 export function measure(worldCount = 10, seedBase = 'calibration') {
@@ -38,7 +57,15 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
     weakestFinishedBottomThree: 0,
     // Matches where one side's eleven is clearly better (1.5+ rating points).
     favourite: { matches: 0, won: 0, drawn: 0, lost: 0 },
+    ratings: {
+      n: 0, sum: 0, sumSq: 0, high: 0, low: 0, perfect: 0,
+      byRole: { GK: { n: 0, sum: 0 }, DEF: { n: 0, sum: 0 }, MID: { n: 0, sum: 0 }, ATT: { n: 0, sum: 0 } },
+      winners: { n: 0, sum: 0 }, losers: { n: 0, sum: 0 },
+      potmByRole: { GK: 0, DEF: 0, MID: 0, ATT: 0 },
+      topScorerGoals: 0, topAssists: 0, topAverage: 0, abilityCorrelation: 0,
+    },
   };
+  const R = out.ratings;
 
   for (let w = 0; w < worldCount; w++) {
     const world = generateWorld(`${seedBase}-${w}`);
@@ -68,6 +95,24 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
         };
       }
 
+      r.players.forEach((lines, side) => {
+        const mine = side === 0 ? r.homeGoals : r.awayGoals;
+        const theirs = side === 0 ? r.awayGoals : r.homeGoals;
+        for (const line of lines) {
+          R.n++;
+          R.sum += line.rating;
+          R.sumSq += line.rating * line.rating;
+          if (line.rating >= 8) R.high++;
+          if (line.rating < 6) R.low++;
+          if (line.rating >= 10) R.perfect++;
+          R.byRole[line.role].n++;
+          R.byRole[line.role].sum += line.rating;
+          if (mine > theirs) { R.winners.n++; R.winners.sum += line.rating; }
+          if (mine < theirs) { R.losers.n++; R.losers.sum += line.rating; }
+          if (line.id === r.potm) R.potmByRole[line.role]++;
+        }
+      });
+
       const gap = quality.get(r.homeId) - quality.get(r.awayId);
       if (Math.abs(gap) >= 1.5) {
         const favGoals = gap > 0 ? r.homeGoals : r.awayGoals;
@@ -89,12 +134,38 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
       if (place(ranked[0]) === 0) out.strongestFinishedFirst++;
       if (place(ranked[0]) <= 2) out.strongestFinishedTopThree++;
       if (place(ranked[ranked.length - 1]) >= table.length - 3) out.weakestFinishedBottomThree++;
+
+      // Season leaders, and whether better players really do rate higher.
+      const totals = playerTotals(results.filter((r) => r.divisionIndex === division.index));
+      R.topScorerGoals += leaders(totals, 'goals', { limit: 1 })[0].goals;
+      R.topAssists += leaders(totals, 'assists', { limit: 1 })[0].assists;
+      R.topAverage += leaders(totals, 'rating', { limit: 1, minApps: 11 })[0].rating;
+      const pairs = [...totals.values()]
+        .filter((t) => t.apps >= 11)
+        .map((t) => [overall(world.players.find((p) => p.id === t.id)), t.rating]);
+      R.abilityCorrelation += pearson(pairs);
     }
   }
 
   const m = out.matches;
+  const mean = R.sum / R.n;
+  const roleMeans = Object.fromEntries(Object.entries(R.byRole).map(([k, v]) => [k, v.sum / v.n]));
   return {
     ...out,
+    ratingMean: mean,
+    ratingSd: Math.sqrt(R.sumSq / R.n - mean * mean),
+    ratingByRole: roleMeans,
+    ratingRoleSpread: Math.max(...Object.values(roleMeans).map((v) => Math.abs(v - mean))),
+    ratingHigh: R.high / R.n,
+    ratingLow: R.low / R.n,
+    ratingPerfect: R.perfect / R.n,
+    ratingWinners: R.winners.sum / R.winners.n,
+    ratingLosers: R.losers.sum / R.losers.n,
+    potmShare: Object.fromEntries(Object.entries(R.potmByRole).map(([k, v]) => [k, v / m])),
+    avgTopScorerGoals: R.topScorerGoals / out.divisions,
+    avgTopAssists: R.topAssists / out.divisions,
+    avgTopRating: R.topAverage / out.divisions,
+    abilityCorrelation: R.abilityCorrelation / out.divisions,
     goalsPerGame: out.goals / m,
     homeWin: out.homeWins / m,
     draw: out.draws / m,

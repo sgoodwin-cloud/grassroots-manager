@@ -24,6 +24,15 @@ console.log(`    weakest squad    finished bottom three ${pct(s.weakestFinishedB
 const f = s.favourite;
 console.log(`    clear favourite  won ${pct(f.won / f.matches)}, drew ${pct(f.drawn / f.matches)}, lost ${pct(f.lost / f.matches)}  (${f.matches} matches, 1.5+ rating gap)`);
 
+console.log('\nplayer ratings:');
+console.log(`${flag(s.ratingMean, TARGETS.ratingMean)} average          ${s.ratingMean.toFixed(2)}   target ${TARGETS.ratingMean.join('-')}  (spread ${s.ratingSd.toFixed(2)})`);
+console.log(`${s.ratingRoleSpread <= TARGETS.ratingRoleSpread ? 'ok ' : 'OUT'} by position      ${Object.entries(s.ratingByRole).map(([k, v]) => `${k} ${v.toFixed(2)}`).join('  ')}`);
+console.log(`    8.0 or more      ${pct(s.ratingHigh)}   under 6.0 ${pct(s.ratingLow)}   10.0 ${pct(s.ratingPerfect)}`);
+console.log(`    winners v losers ${s.ratingWinners.toFixed(2)} v ${s.ratingLosers.toFixed(2)}`);
+console.log(`    player of match  ${Object.entries(s.potmShare).map(([k, v]) => `${k} ${pct(v)}`).join('  ')}`);
+console.log(`    season leaders   top scorer ${s.avgTopScorerGoals.toFixed(1)} goals, most assists ${s.avgTopAssists.toFixed(1)}, best average ${s.avgTopRating.toFixed(2)}`);
+console.log(`    ability link     ${s.abilityCorrelation.toFixed(2)} (correlation between a player's ability and his season average)`);
+
 console.log('\ngoals in a match:');
 s.goalsHistogram.forEach((n, i) => console.log(`  ${i === 8 ? '8+' : ` ${i}`}  ${pct(n / s.matches).padStart(6)}  ${'#'.repeat(Math.round((n / s.matches) * 100))}`));
 
