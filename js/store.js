@@ -5,11 +5,11 @@
 // kept in memory for the session and `persistent` is false.
 
 const DB_NAME = 'grassroots-manager';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // 2 adds the 'live' store for a match in progress
 export const SLOTS = [1, 2, 3];
 
 let dbPromise = null;
-const memory = { saves: new Map(), slots: new Map() };
+const memory = { saves: new Map(), slots: new Map(), live: new Map() };
 export let persistent = true;
 
 function open() {
@@ -21,6 +21,7 @@ function open() {
         const db = request.result;
         if (!db.objectStoreNames.contains('saves')) db.createObjectStore('saves');
         if (!db.objectStoreNames.contains('slots')) db.createObjectStore('slots');
+        if (!db.objectStoreNames.contains('live')) db.createObjectStore('live');
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => resolve(null);
@@ -88,10 +89,39 @@ export async function deleteSave(slot) {
   if (!db) {
     memory.saves.delete(slot);
     memory.slots.delete(slot);
+    memory.live.delete(slot);
     return;
   }
-  return run(db, ['saves', 'slots'], 'readwrite', (tx) => {
+  return run(db, ['saves', 'slots', 'live'], 'readwrite', (tx) => {
     tx.objectStore('saves').delete(slot);
     tx.objectStore('slots').delete(slot);
+    tx.objectStore('live').delete(slot);
+  });
+}
+
+// A match in progress is kept apart from the save: it is small and written
+// often, where the save is large and written once a round.
+
+/** The match being watched in this slot, or null. */
+export async function loadLive(slot) {
+  const db = await open();
+  if (!db) return memory.live.get(slot) || null;
+  return run(db, ['live'], 'readonly', (tx, done) => {
+    const request = tx.objectStore('live').get(slot);
+    request.onsuccess = () => done(request.result || null);
+  });
+}
+
+/** Store the match in progress, or pass null to clear it. */
+export async function writeLive(slot, live) {
+  const db = await open();
+  if (!db) {
+    if (live) memory.live.set(slot, live);
+    else memory.live.delete(slot);
+    return;
+  }
+  return run(db, ['live'], 'readwrite', (tx) => {
+    if (live) tx.objectStore('live').put(live, slot);
+    else tx.objectStore('live').delete(slot);
   });
 }

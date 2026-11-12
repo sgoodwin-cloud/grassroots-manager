@@ -1,6 +1,9 @@
 // Player stats. Nothing here is stored: season totals are always worked out
 // from the per-match stat lines kept with each result.
 
+/** A player needs this many minutes in a match for his rating to count towards his average. */
+export const MIN_MINUTES_RATED = 15;
+
 /**
  * Season totals for every player who appears in `results`.
  * Returns a Map of player id -> totals. `rating` is the average over
@@ -19,11 +22,14 @@ export function playerTotals(results) {
           t = {
             id: line.id, clubId, apps: 0, minutes: 0, goals: 0, assists: 0, shots: 0, onTarget: 0,
             keyPasses: 0, tackles: 0, saves: 0, cleanSheets: 0, potm: 0, ratingSum: 0, rating: 0,
-            best: 0, form: [],
+            best: 0, form: [], starts: 0, rated: 0, yellows: 0, reds: 0,
           };
           totals.set(line.id, t);
         }
         t.apps++;
+        if (!line.sub) t.starts++;
+        t.yellows += line.yc || 0;
+        t.reds += line.rc || 0;
         t.minutes += line.min;
         t.goals += line.g;
         t.assists += line.a;
@@ -32,16 +38,20 @@ export function playerTotals(results) {
         t.keyPasses += line.kp;
         t.tackles += line.tk;
         t.saves += line.sv;
-        if (conceded === 0 && (line.role === 'GK' || line.role === 'DEF')) t.cleanSheets++;
+        if (conceded === 0 && line.min >= 60 && (line.role === 'GK' || line.role === 'DEF')) t.cleanSheets++;
         if (r.potm === line.id) t.potm++;
-        t.ratingSum += line.rating;
-        t.best = Math.max(t.best, line.rating);
-        t.form.push(line.rating);
-        if (t.form.length > 5) t.form.shift();
+        // A brief substitute appearance is a game played, but too short to rate.
+        if (line.min >= MIN_MINUTES_RATED) {
+          t.rated++;
+          t.ratingSum += line.rating;
+          t.best = Math.max(t.best, line.rating);
+          t.form.push(line.rating);
+          if (t.form.length > 5) t.form.shift();
+        }
       }
     });
   }
-  for (const t of totals.values()) t.rating = t.ratingSum / t.apps;
+  for (const t of totals.values()) t.rating = t.rated ? t.ratingSum / t.rated : 0;
   return totals;
 }
 
@@ -59,7 +69,7 @@ export function minAppsForRating(results) {
  */
 export function leaders(totals, key, { limit = 10, minApps = 1, nameOf = (id) => id } = {}) {
   let list = [...totals.values()];
-  if (key === 'rating') list = list.filter((t) => t.apps >= minApps);
+  if (key === 'rating') list = list.filter((t) => t.rated >= minApps);
   else list = list.filter((t) => t[key] > 0);
   list.sort((a, b) => {
     if (b[key] !== a[key]) return b[key] - a[key];

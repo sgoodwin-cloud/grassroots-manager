@@ -1,10 +1,12 @@
 """Update test through a stale CDN. Run from the repo root:
-    python3 tools/update-test.py
-Serves the current app as "v-old", then a copy with the version bumped as "v-new", the way GitHub
-Pages does just after a deploy: sw.js is fresh, but plain addresses and the first install attempt
-(try=0) still get the old files. The update must still land on the new version and keep the save.
+    python3 tools/update-test.py [old-git-ref]
+Serves the version on `main` (or the given git ref) as the installed app, then the working tree as
+the new version, the way GitHub Pages does just after a deploy: sw.js is fresh, but plain addresses
+and the first install attempt (try=0) still get the old files. The update must still land on the
+new version, keep the save made in the old version, and carry on playing it.
+If the working tree has the same version as the old ref, the new copy's version is bumped by one.
 """
-import asyncio, http.server, os, re, shutil, sys, tempfile, threading
+import asyncio, http.server, os, re, shutil, subprocess, sys, tempfile, threading
 from urllib.parse import urlparse, parse_qs
 from playwright.async_api import async_playwright
 
@@ -17,26 +19,31 @@ def check(ok, text):
     print(('ok   ' if ok else 'FAIL ') + text)
     if not ok: problems.append(text)
 
-def copy(dest, bump=False):
-    for f in FILES:
-        src = os.path.join(ROOT, f)
-        (shutil.copytree if os.path.isdir(src) else shutil.copy)(src, os.path.join(dest, f))
-    old = re.search(r"APP_VERSION = '(\d+)'", open(os.path.join(dest, 'js/app.js')).read()).group(1)
-    new = str(int(old) + 1)
-    if bump:
-        for path, a, b in [('js/app.js', f"APP_VERSION = '{old}'", f"APP_VERSION = '{new}'"),
-                           ('sw.js', f"grassroots-manager-v{old}'", f"grassroots-manager-v{new}'")]:
-            full = os.path.join(dest, path)
-            text = open(full).read()          # read fully before opening for writing (playbook)
-            assert a in text
-            open(full, 'w').write(text.replace(a, b))
-    return old, new
+REF = sys.argv[1] if len(sys.argv) > 1 else 'main'
+
+def version_of(dest):
+    return re.search(r"APP_VERSION = '(\d+)'", open(os.path.join(dest, 'js/app.js')).read()).group(1)
 
 tmp = tempfile.mkdtemp()
 OLD, NEW = os.path.join(tmp, 'old'), os.path.join(tmp, 'new')
 os.makedirs(OLD); os.makedirs(NEW)
-old_v, new_v = copy(OLD)
-copy(NEW, bump=True)
+# The installed version: exactly what is on the old ref.
+archive = subprocess.run(['git', 'archive', REF] + FILES, cwd=ROOT, capture_output=True, check=True).stdout
+subprocess.run(['tar', '-x', '-C', OLD], input=archive, check=True)
+# The new version: the working tree.
+for f in FILES:
+    src = os.path.join(ROOT, f)
+    (shutil.copytree if os.path.isdir(src) else shutil.copy)(src, os.path.join(NEW, f))
+old_v, new_v = version_of(OLD), version_of(NEW)
+if old_v == new_v:
+    new_v = str(int(old_v) + 1)
+    for path, a, b in [('js/app.js', f"APP_VERSION = '{old_v}'", f"APP_VERSION = '{new_v}'"),
+                       ('sw.js', f"grassroots-manager-v{old_v}'", f"grassroots-manager-v{new_v}'")]:
+        full = os.path.join(NEW, path)
+        text = open(full).read()          # read fully before opening for writing (playbook)
+        assert a in text
+        open(full, 'w').write(text.replace(a, b))
+print(f'updating from v{old_v} ({REF}) to v{new_v} (working tree)')
 mode = {'deploying': False, 'stale_hits': 0}
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -78,8 +85,15 @@ async def main():
         await page.locator('[data-action="start-game"]').click()
         await page.wait_for_selector('.tabbar')
         club = (await page.locator('.topbar .club').inner_text()).strip()
-        await page.locator('.screen [data-action="play"]').click()
-        await page.wait_for_selector('.scoreline')
+        # Play three rounds in the old version, so the save has results in the old format.
+        for _ in range(3):
+            await page.locator('.screen [data-action="play"]').click()
+            if await page.locator('.sheet [data-action="fix-auto"]').count():
+                await page.locator('.sheet [data-action="fix-auto"]').click()
+                await page.locator('.screen [data-action="play"]').click()
+            await page.wait_for_selector('.scoreline')
+            await page.locator('.topbar [data-action="close-sub"]').click()
+            await page.wait_for_selector('.tabbar')
 
         mode['deploying'] = True
         await page.evaluate('navigator.serviceWorker.getRegistration().then(r => r.update())')
@@ -98,6 +112,28 @@ async def main():
         check((await page.locator('.ver').inner_text()).strip() == f'v{new_v}', f'one tap moves to v{new_v}')
         check(club in await page.locator('.slot').first.inner_text(), 'the save is kept through the update')
         check(await page.locator('#update').is_hidden(), 'update bar is gone after updating')
+        # The old save opens in the new version and carries on.
+        await page.locator('[data-action="continue"][data-slot="1"]').click()
+        await page.wait_for_selector('.tabbar')
+        check('round 4 of 22' in (await page.locator('.topbar .sub').inner_text()).lower(), 'the old save opens at the right round')
+        await page.locator('[data-tab="stats"]').click()
+        check(await page.locator('.tablecard tbody tr').count() == 22, 'stats from the old results still show')
+        await page.locator('[data-tab="fixtures"]').click()
+        await page.locator('.result-btn').first.click()
+        await page.wait_for_selector('.ratings')
+        check(await page.locator('.ratings tr').count() >= 11, 'an old match report still opens')
+        await page.locator('.topbar [data-action="close-sub"]').click()
+        await page.locator('[data-tab="home"]').click()
+        await page.locator('.screen [data-action="play"]').click()
+        if await page.locator('.sheet [data-action="fix-auto"]').count():
+            await page.locator('.sheet [data-action="fix-auto"]').click()
+            await page.locator('.screen [data-action="play"]').click()
+        await page.wait_for_selector('.ratings')
+        check(True, 'the next round plays in the new version')
+        await page.locator('.topbar [data-action="close-sub"]').click()
+        await page.locator('[data-action="menu"]').click()
+        await page.locator('.sheet [data-action="to-start"]').click()
+        await page.wait_for_selector('.start')
         caches = await page.evaluate('caches.keys()')
         check(caches == [f'grassroots-manager-v{new_v}'], f'old cache cleared: {caches}')
         await ctx.set_offline(True)

@@ -6,7 +6,7 @@ import { generateWorld, squadOf, clubById } from './world.js';
 import { simulateSeason, divisionTable } from './league.js';
 import { simulateMatch } from './match.js';
 import { bestLineup, pickXI, lineupQuality, FORMATIONS } from './team.js';
-import { playerTotals, leaders } from './stats.js';
+import { playerTotals, leaders, MIN_MINUTES_RATED } from './stats.js';
 import { overall } from './player.js';
 
 // Design-doc targets (min, max).
@@ -57,6 +57,7 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
     weakestFinishedBottomThree: 0,
     // Matches where one side's eleven is clearly better (1.5+ rating points).
     favourite: { matches: 0, won: 0, drawn: 0, lost: 0 },
+    yellows: 0, reds: 0, injuries: 0, subs: 0, playersUsed: 0,
     ratings: {
       n: 0, sum: 0, sumSq: 0, high: 0, low: 0, perfect: 0,
       byRole: { GK: { n: 0, sum: 0 }, DEF: { n: 0, sum: 0 }, MID: { n: 0, sum: 0 }, ATT: { n: 0, sum: 0 } },
@@ -95,10 +96,17 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
         };
       }
 
+      for (const e of r.incidents) {
+        if (e.type === 'yellow') out.yellows++;
+        else if (e.type === 'red') out.reds++;
+        else if (e.type === 'injury') out.injuries++;
+        else if (e.type === 'sub') out.subs++;
+      }
       r.players.forEach((lines, side) => {
         const mine = side === 0 ? r.homeGoals : r.awayGoals;
         const theirs = side === 0 ? r.awayGoals : r.homeGoals;
         for (const line of lines) {
+          if (line.min < MIN_MINUTES_RATED) continue;
           R.n++;
           R.sum += line.rating;
           R.sumSq += line.rating * line.rating;
@@ -140,8 +148,9 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
       R.topScorerGoals += leaders(totals, 'goals', { limit: 1 })[0].goals;
       R.topAssists += leaders(totals, 'assists', { limit: 1 })[0].assists;
       R.topAverage += leaders(totals, 'rating', { limit: 1, minApps: 11 })[0].rating;
+      out.playersUsed += totals.size / division.clubIds.length;
       const pairs = [...totals.values()]
-        .filter((t) => t.apps >= 11)
+        .filter((t) => t.starts >= 11)
         .map((t) => [overall(world.players.find((p) => p.id === t.id)), t.rating]);
       R.abilityCorrelation += pearson(pairs);
     }
@@ -167,6 +176,11 @@ export function measure(worldCount = 10, seedBase = 'calibration') {
     avgTopRating: R.topAverage / out.divisions,
     abilityCorrelation: R.abilityCorrelation / out.divisions,
     goalsPerGame: out.goals / m,
+    yellowsPerTeam: out.yellows / (2 * m),
+    redsPerMatch: out.reds / m,
+    injuriesPerMatch: out.injuries / m,
+    subsPerTeam: out.subs / (2 * m),
+    playersUsedPerClub: out.playersUsed / out.divisions,
     homeWin: out.homeWins / m,
     draw: out.draws / m,
     awayWin: out.awayWins / m,
@@ -258,4 +272,48 @@ export function measureFormations(worldCount = 3, seedBase = 'formations') {
   return Object.fromEntries(
     Object.entries(points).map(([f, v]) => [f, v.points / v.games]),
   );
+}
+
+/**
+ * Tactic balance: every club plays every other club in its division at home
+ * and away with one tactical setting changed, against opponents on neutral
+ * settings. Both sides make substitutions but neither changes tactics during
+ * the match. Returns points per game for each setting; on average none should
+ * be clearly better than neutral, because each is meant to suit some squads
+ * and matches and not others.
+ */
+export function measureTactics(worldCount = 2, seedBase = 'tactics') {
+  const variants = { neutral: {} };
+  for (const key of ['pressing', 'line', 'tempo']) {
+    variants[`${key} -1`] = { [key]: -1 };
+    variants[`${key} +1`] = { [key]: 1 };
+  }
+  const points = Object.fromEntries(Object.keys(variants).map((k) => [k, { points: 0, games: 0 }]));
+  for (let w = 0; w < worldCount; w++) {
+    const world = generateWorld(`${seedBase}-${w}`);
+    const lineups = new Map(world.clubs.map((c) => [c.id, bestLineup(squadOf(world, c.id))]));
+    for (const division of world.divisions) {
+      for (const a of division.clubIds) {
+        for (const b of division.clubIds) {
+          if (a === b) continue;
+          for (const [name, tactics] of Object.entries(variants)) {
+            for (const atHome of [true, false]) {
+              const me = { clubId: a, name: a, lineup: lineups.get(a), tactics, manager: 'ai-subs' };
+              const them = { clubId: b, name: b, lineup: lineups.get(b), tactics: {}, manager: 'ai-subs' };
+              const r = simulateMatch({
+                home: atHome ? me : them,
+                away: atHome ? them : me,
+                seed: hashSeed(seedBase, w, a, b, atHome),
+              });
+              const mine = atHome ? r.homeGoals : r.awayGoals;
+              const theirs = atHome ? r.awayGoals : r.homeGoals;
+              points[name].games++;
+              points[name].points += mine > theirs ? 3 : mine === theirs ? 1 : 0;
+            }
+          }
+        }
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(points).map(([k, v]) => [k, v.points / v.games]));
 }

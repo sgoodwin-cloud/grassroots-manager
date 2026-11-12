@@ -68,7 +68,8 @@ export function generateWorld(seed, options = {}) {
   // The player's own club, if they made one, takes one of the bottom twelve places.
   if (options.customClubName) {
     const bottom = clubs.filter((c) => c.divisionIndex === DIVISION_COUNT - 1);
-    const club = rng.pick(bottom);
+    // A mid-table squad (the sixth strongest of the twelve), so your own club is a fair start.
+    const club = bottom.slice().sort((a, b) => b.level - a.level)[5];
     club.name = String(options.customClubName).trim();
     club.place = null;
     club.custom = true;

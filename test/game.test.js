@@ -6,8 +6,10 @@ import { generateWorld } from '../js/world.js';
 import {
   newGame, openGame, migrate, SAVE_VERSION, ROUNDS, userClub, userLineup, setFormation, autoPick,
   selectPlayer, lineupStrength, userFixtures, nextFixture, playRound, seasonOver, table, positionOf,
-  topTen, squadStats, summary, squad, shortName, roundResults, FORMATIONS,
+  topTen, squadStats, summary, squad, shortName, roundResults, FORMATIONS, startMatch, finishRound, userSide,
+  setTactic, lineupProblems, missing, available,
 } from '../js/game.js';
+import { stepMinute, substitute, bestReplacement } from '../js/match.js';
 
 const bottomClub = (seed) => generateWorld(seed).divisions[3].clubIds[4];
 
@@ -76,6 +78,7 @@ test('a full season: 22 rounds, every division plays, tables and stats add up', 
   assert.equal(userFixtures(g).length, ROUNDS);
   assert.equal(userFixtures(g).filter((f) => f.atHome).length, 11);
   for (let round = 1; round <= ROUNDS; round++) {
+    autoPick(g);
     const next = nextFixture(g);
     assert.equal(next.round, round);
     const mine = playRound(g, 5000 + round);
@@ -102,7 +105,7 @@ test('a full season: 22 rounds, every division plays, tables and stats add up', 
   for (const key of ['goals', 'assists', 'rating']) assert.equal(topTen(g, 3, key).length, 10);
   const stats = squadStats(g);
   assert.equal(stats.length, 22);
-  assert.equal(stats.reduce((t, row) => t + row.stats.apps, 0), 22 * 11);
+  assert.equal(stats.reduce((t, row) => t + row.stats.starts, 0), 22 * 11);
   const row = table(g, 3).find((r) => r.clubId === g.save.userClubId);
   assert.equal(stats.reduce((t, r) => t + r.stats.goals, 0), row.gf);
 });
@@ -110,12 +113,14 @@ test('a full season: 22 rounds, every division plays, tables and stats add up', 
 test('your team selection changes your results, and only yours', () => {
   const play = (weaken) => {
     const g = openGame(newGame({ seed: 'G5', clubId: bottomClub('G5') }));
-    if (weaken) {
-      // Play the reserves: swap every outfield starter for a bench player.
-      const lineup = userLineup(g);
-      lineup.bench.filter((p) => p.pos !== 'GK').slice(0, 10).forEach((p, i) => selectPlayer(g, i + 1, p.id));
+    for (let i = 0; i < ROUNDS; i++) {
+      autoPick(g);
+      if (weaken) {
+        // Play the reserves: swap every outfield starter for a bench player.
+        userLineup(g).bench.filter((p) => p.pos !== 'GK').slice(0, 10).forEach((p, n) => selectPlayer(g, n + 1, p.id));
+      }
+      playRound(g);
     }
-    for (let i = 0; i < ROUNDS; i++) playRound(g);
     return g;
   };
   const best = play(false);
@@ -128,10 +133,12 @@ test('your team selection changes your results, and only yours', () => {
 test('a save survives being stored and reopened mid-season', () => {
   const g = openGame(newGame({ seed: 'G6', clubId: bottomClub('G6') }));
   setFormation(g, '4-3-3');
-  for (let i = 0; i < 7; i++) playRound(g);
+  setTactic(g, 'pressing', 1);
+  for (let i = 0; i < 7; i++) { autoPick(g); playRound(g); }
   const reopened = openGame(JSON.parse(JSON.stringify(g.save)));
   assert.deepEqual(summary(reopened), summary(g));
   assert.equal(userLineup(reopened).formation, '4-3-3');
+  assert.equal(reopened.save.lineup.tactics.pressing, 1);
   assert.deepEqual(table(reopened, 3), table(g, 3));
   // Carrying on from the reopened save gives the same next result.
   const a = playRound(g, 1);
@@ -143,10 +150,68 @@ test('saves are upgraded, never wiped, and a broken line-up is repaired', () => 
   const save = newGame({ seed: 'G7', clubId: bottomClub('G7') });
   assert.equal(migrate(save), save);
   assert.throws(() => migrate({ version: 0 }));
+  // A version 1 save (before tactics, cards and substitutions) is brought up to date and plays on.
+  const old = newGame({ seed: 'G7', clubId: bottomClub('G7') });
+  old.version = 1;
+  delete old.lineup.tactics;
+  old.results = [];
+  const upgraded = openGame(JSON.parse(JSON.stringify(old)));
+  assert.equal(upgraded.save.version, SAVE_VERSION);
+  assert.deepEqual(upgraded.save.lineup.tactics, { pressing: 0, line: 0, tempo: 0 });
+  assert.ok(playRound(upgraded));
   save.lineup.slots[3].playerId = 'nobody';
   const g = openGame(save);
   assert.equal(userLineup(g).players.length, 11);
   assert.ok(userLineup(g).players.every((x) => x.player));
+});
+
+test('a watched match: you make the changes, then the rest of the round is played', () => {
+  const g = openGame(newGame({ seed: 'G8', clubId: bottomClub('G8') }));
+  setTactic(g, 'tempo', 1);
+  const state = startMatch(g, 'user');
+  const mine = userSide(g, state);
+  assert.equal(state.teams[mine].clubId, g.save.userClubId);
+  assert.equal(state.teams[mine].manager, 'user');
+  assert.equal(state.teams[mine].tactics.tempo, 1);
+  assert.equal(state.teams[1 - mine].manager, 'ai');
+  assert.equal(finishRound(g, state), null); // not until the match is over
+  for (let i = 0; i < 70; i++) stepMinute(state);
+  const team = state.teams[mine];
+  const tired = team.eleven.filter((x) => x.role !== 'GK').sort((a, b) => a.energy - b.energy)[0];
+  assert.ok(substitute(state, mine, tired.player.id, bestReplacement(team, tired.role).id));
+  while (!state.finished) stepMinute(state);
+  const result = finishRound(g, state, 99);
+  assert.equal(g.save.round, 1);
+  assert.equal(g.save.results.length, 24);
+  assert.equal(g.save.results[0], result);
+  assert.ok(result.players[mine].some((line) => line.sub === 70));
+  assert.equal(userFixtures(g)[0].result, result);
+});
+
+test('a suspended or injured player has to be replaced before the next match', () => {
+  // Play on until someone in your squad is unavailable.
+  const g = openGame(newGame({ seed: 'G9', clubId: bottomClub('G9') }));
+  let found = null;
+  while (!seasonOver(g) && !found) {
+    autoPick(g);
+    const before = userLineup(g).players.map((x) => x.player.id);
+    playRound(g);
+    const out = missing(g, g.save.userClubId);
+    found = before.find((id) => out.has(id)) || null;
+  }
+  assert.ok(found, 'expected an injury or suspension during the season');
+  if (seasonOver(g)) return;
+  const problems = lineupProblems(g);
+  assert.ok(problems.some((p) => p.player.id === found));
+  assert.ok(['suspended', 'injured'].includes(problems[0].reason));
+  assert.equal(startMatch(g), null);
+  assert.equal(playRound(g), null);
+  assert.equal(selectPlayer(g, 0, found), false);
+  assert.ok(!available(g, g.save.userClubId).some((p) => p.id === found));
+  assert.ok(!userLineup(g).bench.some((p) => p.id === found));
+  autoPick(g);
+  assert.equal(lineupProblems(g).length, 0);
+  assert.ok(playRound(g));
 });
 
 test('short names fit tight tables', () => {

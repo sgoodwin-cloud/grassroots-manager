@@ -1,7 +1,7 @@
 // Run with: node tools/calibrate.js [worlds]
 // Simulates many seasons and prints how the engine compares with the targets.
 
-import { measure, measureDivisionGap, measureFormations, TARGETS, inTarget } from '../js/calibrate.js';
+import { measure, measureDivisionGap, measureFormations, measureTactics, TARGETS, inTarget } from '../js/calibrate.js';
 
 const worlds = Number(process.argv[2] || 30);
 const pct = (v) => `${(v * 100).toFixed(1)}%`;
@@ -24,6 +24,9 @@ console.log(`    weakest squad    finished bottom three ${pct(s.weakestFinishedB
 const f = s.favourite;
 console.log(`    clear favourite  won ${pct(f.won / f.matches)}, drew ${pct(f.drawn / f.matches)}, lost ${pct(f.lost / f.matches)}  (${f.matches} matches, 1.5+ rating gap)`);
 
+console.log(`    cards            ${s.yellowsPerTeam.toFixed(2)} yellows per team; a red every ${(1 / s.redsPerMatch).toFixed(1)} matches`);
+console.log(`    injuries         one every ${(1 / s.injuriesPerMatch).toFixed(1)} matches; ${s.subsPerTeam.toFixed(2)} substitutions per team; ${s.playersUsedPerClub.toFixed(1)} players used per club in a season`);
+
 console.log('\nplayer ratings:');
 console.log(`${flag(s.ratingMean, TARGETS.ratingMean)} average          ${s.ratingMean.toFixed(2)}   target ${TARGETS.ratingMean.join('-')}  (spread ${s.ratingSd.toFixed(2)})`);
 console.log(`${s.ratingRoleSpread <= TARGETS.ratingRoleSpread ? 'ok ' : 'OUT'} by position      ${Object.entries(s.ratingByRole).map(([k, v]) => `${k} ${v.toFixed(2)}`).join('  ')}`);
@@ -44,4 +47,9 @@ for (const g of measureDivisionGap()) {
 console.log('\nformation balance (points per game v 4-4-2):');
 for (const [formation, ppg] of Object.entries(measureFormations())) {
   console.log(`  ${formation}  ${ppg.toFixed(3)}`);
+}
+
+console.log('\ntactic balance (points per game v neutral opponents):');
+for (const [name, ppg] of Object.entries(measureTactics())) {
+  console.log(`  ${name.padEnd(12)} ${ppg.toFixed(3)}`);
 }

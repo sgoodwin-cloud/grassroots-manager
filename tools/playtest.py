@@ -63,8 +63,15 @@ async def main():
             await shot('04-team')
             rows = await page.locator('.teamlist').first.locator('.slotrow').count()
             check(rows == 11, 'team selection shows eleven players')
-            box = await page.locator('[data-action="auto-pick"]').bounding_box()
-            check(box['y'] + box['height'] <= 844, 'team selection: eleven plus the main buttons fit without scrolling')
+            box = await page.locator('.screen [data-action="watch"]').bounding_box()
+            # 763 is the usable height on Stuart's iPhone 13 once the status bar and home bar are taken out.
+            check(box['y'] + box['height'] <= 763, 'team selection: eleven plus the main buttons fit in 763px without scrolling')
+            await tap('[data-action="tactics"]')
+            await page.wait_for_selector('.sheet')
+            await tap('[data-action="set-tactic"][data-key="tempo"][data-value="1"]')
+            await shot('04b-tactics')
+            await tap('[data-action="close-sheet"]')
+            check('1 changed' in await page.locator('[data-action="tactics"]').inner_text(), 'tactics are set from team selection')
             await tap('[data-formation="4-3-3"]')
             check(await page.locator('.chip.is-on').inner_text() == '4-3-3', 'formation changes')
             await page.locator('.teamlist').first.locator('.slotrow').nth(6).click()
@@ -76,10 +83,27 @@ async def main():
             check(before != after, 'picking a player changes the slot')
             await tap('[data-action="auto-pick"]')
 
-            await tap('[data-action="play"]')
-            await page.wait_for_selector('.scoreline')
+            async def play_round():
+                await tap('.screen [data-action="play"]')
+                # Someone suspended or injured in the eleven: let auto-pick fix it, then play.
+                if await page.locator('.sheet [data-action="fix-auto"]').count():
+                    fixes.append(1)
+                    await tap('.sheet [data-action="fix-auto"]')
+                    await tap('.screen [data-action="play"]')
+                await page.wait_for_selector('.ratings')
+            fixes = []
+
+            async def watch_match():
+                await tap('.screen [data-action="watch"]')
+                if await page.locator('.sheet [data-action="fix-auto"]').count():
+                    fixes.append(1)
+                    await tap('.sheet [data-action="fix-auto"]')
+                    await tap('.screen [data-action="watch"]')
+                await page.wait_for_selector('.feed li')
+
+            await play_round()
             await shot('06-report')
-            check(await page.locator('.ratings tr').count() == 11, 'report shows eleven ratings')
+            check(await page.locator('.ratings tr:not(.is-sub)').count() == 11, 'report shows eleven starters with ratings')
             await page.locator('.seg button').nth(1).click()
             await page.locator('.ratings tr').first.click()
             await page.wait_for_selector('.sheet')
@@ -88,12 +112,68 @@ async def main():
             await tap('.btn[data-action="close-sub"]')
             await page.wait_for_selector('.tabbar')
 
-            for i in range(21):
-                await tap('.screen [data-action="play"]')
-                await page.wait_for_selector('.scoreline')
+            # Round 2: watch the match, change tactics and make a substitution at half-time.
+            await watch_match()
+            await tap('[data-speed="4"]')
+            changed = False
+            for _ in range(600):
+                if await page.locator('[data-action="live-finish"]').count(): break
+                if await page.locator('[data-action="live-replace"]').count():
+                    await page.locator('[data-action="live-replace"]').first.click()
+                if await page.locator('.sheet').count():
+                    await tap('[data-action="close-sheet"]')
+                reason = page.locator('.live-reason')
+                if await reason.count():
+                    if not changed and 'half' in (await reason.inner_text()).lower():
+                        await shot('06b-live-half-time')
+                        await tap('[data-action="live-changes"]')
+                        await page.wait_for_selector('.sheet')
+                        await shot('06c-live-changes')
+                        await tap('[data-action="live-tactic"][data-key="pressing"][data-value="1"]')
+                        await page.locator('.live-row').nth(8).click()
+                        await shot('06d-live-substitute')
+                        await page.locator('[data-action="live-sub-on"]').first.click()
+                        check('2 of 3' in await page.locator('.sheet .section-title').first.inner_text(), 'a substitution uses one of three')
+                        check(await page.locator('.sheet .seg.three button.is-on').first.inner_text() == 'Press high', 'tactics change during the match')
+                        await tap('[data-action="close-sheet"]')
+                        changed = True
+                    await tap('[data-action="live-toggle"]')
+                await page.wait_for_timeout(120)
+            check(changed, 'the match paused at half-time')
+            await shot('06e-live-full-time')
+            check('full time' in (await page.locator('.clock').inner_text()).lower(), 'a watched match runs to full time')
+            await tap('[data-action="live-finish"]')
+            await page.wait_for_selector('.ratings')
+            check(await page.locator('.ratings tr.is-sub').count() >= 1, 'the report lists the substitute')
+            await shot('06f-report-after-watching')
+            await tap('.btn[data-action="close-sub"]')
+            await page.wait_for_selector('.tabbar')
+
+            # Round 3: start watching, close the app mid-match, and pick it up again.
+            await watch_match()
+            await tap('[data-speed="4"]')
+            await page.wait_for_function("parseInt(document.querySelector('.clock').textContent) >= 12", timeout=20000)
+            await tap('[data-action="live-toggle"]') if not await page.locator('.live-reason').count() else None
+            minute = int((await page.locator('.clock').inner_text()).strip().rstrip("'"))
+            await page.wait_for_timeout(300)
+            await page.reload()
+            await page.wait_for_selector('.start')
+            await tap('[data-action="continue"][data-slot="1"]')
+            await page.wait_for_selector('.live-top')
+            resumed = int((await page.locator('.clock').inner_text()).strip().rstrip("'"))
+            check(resumed == minute, f'a match in progress resumes where it was left ({resumed} v {minute})')
+            await shot('06g-live-resumed')
+            await tap('[data-action="live-skip"]')
+            await page.wait_for_selector('.ratings')
+            await tap('.btn[data-action="close-sub"]')
+            await page.wait_for_selector('.tabbar')
+
+            for i in range(19):
+                await play_round()
                 await tap('.topbar [data-action="close-sub"]')
                 await page.wait_for_selector('.tabbar')
                 if i == 9: await shot('08-home-midseason')
+            print(f'     (auto-pick was needed {len(fixes)} time(s) for suspensions or injuries)')
             await shot('09-home-season-over')
             check('season complete' in (await page.locator('.screen').inner_text()).lower(), 'season ends after 22 rounds')
             check(await page.locator('.screen [data-action="play"]').count() == 0, 'no match to play once the season is over')

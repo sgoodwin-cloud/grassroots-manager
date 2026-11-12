@@ -13,11 +13,45 @@ export const FORMATIONS = {
 // Extra bodies in a line make it stronger and fewer make it weaker, measured in
 // rating points. 4-4-2 is the neutral shape. Tuned so no formation dominates
 // (see tools/calibrate.js).
+// The smaller counts only happen after a red card or an injury with no substitutes left.
 const COUNT_BONUS = {
-  DEF: { 3: -1.3, 4: 0, 5: 0.9 },
-  MID: { 3: -0.8, 4: 0, 5: 0.9 },
-  ATT: { 1: -1.6, 2: 0, 3: 1.2 },
+  DEF: { 0: -6, 1: -4.5, 2: -2.8, 3: -1.3, 4: 0, 5: 0.9, 6: 1.5 },
+  MID: { 0: -5, 1: -3.5, 2: -2, 3: -0.8, 4: 0, 5: 0.9, 6: 1.5 },
+  ATT: { 0: -3.5, 1: -1.6, 2: 0, 3: 1.2, 4: 2 },
 };
+
+/** Rating points a line gains or loses for having this many players. */
+export const countBonus = (role, count) => COUNT_BONUS[role][count] ?? 0;
+
+// Tactics: three settings, each -1, 0 or +1.
+// pressing: stand off / normal / press high. line: deep / normal / high. tempo: slow / normal / fast.
+export const DEFAULT_TACTICS = { pressing: 0, line: 0, tempo: 0 };
+export const TACTIC_LABELS = {
+  pressing: ['Stand off', 'Normal', 'Press high'],
+  line: ['Deep', 'Normal', 'High'],
+  tempo: ['Slow', 'Normal', 'Fast'],
+};
+
+const meanAttr = (group, key) =>
+  group.length ? group.reduce((sum, x) => sum + (x.player.attrs[key] ?? 3), 0) / group.length : 0;
+
+/**
+ * What an AI manager sets before kick-off, from how his eleven compares with
+ * the opposition: press if fitter, hold a high line if his defenders are
+ * quicker than their attackers, drop deep if they are clearly slower.
+ */
+export function chooseTactics(lineup, opponent) {
+  const outfield = (l) => l.players.filter((x) => x.role !== 'GK');
+  const stamina = meanAttr(outfield(lineup), 'stamina') - meanAttr(outfield(opponent), 'stamina');
+  const mine = lineup.players.filter((x) => x.role === 'DEF');
+  const theirs = opponent.players.filter((x) => x.role === 'ATT');
+  const pace = meanAttr(mine, 'pace') - meanAttr(theirs, 'pace');
+  return {
+    pressing: stamina > 1 ? 1 : stamina < -1 ? -1 : 0,
+    line: pace > 1.5 ? 1 : pace < -2 ? -1 : 0,
+    tempo: 0,
+  };
+}
 
 /**
  * Pick the best eleven for a formation.
@@ -69,7 +103,7 @@ export function teamStrength(lineup) {
     if (group.length === 0) return 1;
     const mean = group.reduce((sum, x) => sum + positionRating(x.player, role), 0) / group.length;
     const count = shape ? shape[role] : group.length;
-    return mean + (COUNT_BONUS[role][count] ?? 0);
+    return mean + countBonus(role, count);
   };
   const keeper = lineup.players.find((x) => x.role === 'GK');
   return {

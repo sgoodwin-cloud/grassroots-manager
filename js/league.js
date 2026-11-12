@@ -2,8 +2,8 @@
 // The table is always worked out from the stored results, never kept separately.
 
 import { hashSeed, makeRng } from './rng.js';
-import { simulateMatch } from './match.js';
-import { bestLineup } from './team.js';
+import { createMatch, stepMinute, matchResult } from './match.js';
+import { bestLineup, chooseTactics } from './team.js';
 import { squadOf, clubById } from './world.js';
 
 /**
@@ -86,50 +86,86 @@ export function fixturesFor(world, season, divisionIndex) {
 }
 
 /**
- * Play one fixture and return the result as it is stored.
- * lineupOf(clubId) gives each side's line-up. roundIndex counts from 0.
+ * Who a club can't pick for a round, worked out from its earlier results.
+ * A red card means missing the club's next match; an injury means missing as
+ * many rounds as it says. round is the round about to be played, counting from 1.
+ * Returns a Map of player id -> { reason: 'suspended' | 'injured', rounds } (rounds still to miss, this one included).
  */
-export function playFixture(world, season, divisionIndex, roundIndex, fixture, lineupOf) {
-  const { home, away } = fixture;
-  const result = simulateMatch({
-    home: { clubId: home, name: clubById(world, home).name, lineup: lineupOf(home) },
-    away: { clubId: away, name: clubById(world, away).name, lineup: lineupOf(away) },
-    seed: hashSeed(world.seed, season, divisionIndex, roundIndex, home, away),
-  });
-  return {
-    divisionIndex,
-    round: roundIndex + 1,
-    homeId: result.homeId,
-    awayId: result.awayId,
-    homeGoals: result.homeGoals,
-    awayGoals: result.awayGoals,
-    goals: result.goals,
-    stats: result.stats,
-    players: result.players,
-    potm: result.potm,
-  };
+export function unavailable(results, clubId, round) {
+  const out = new Map();
+  for (const r of results) {
+    if (!r.incidents || r.round >= round || (r.homeId !== clubId && r.awayId !== clubId)) continue;
+    const side = r.homeId === clubId ? 0 : 1;
+    for (const e of r.incidents) {
+      if (e.side !== side) continue;
+      if (e.type === 'red' && r.round === round - 1) out.set(e.playerId, { reason: 'suspended', rounds: 1 });
+      if (e.type === 'injury' && r.round + e.out >= round) {
+        out.set(e.playerId, { reason: 'injured', rounds: r.round + e.out - round + 1 });
+      }
+    }
+  }
+  return out;
 }
 
 /**
- * Play a full season in every division with AI managers picking the teams.
+ * Play one fixture and return the result as it is stored.
+ * sideOf(clubId) gives each side's { lineup, tactics?, manager? }. Without
+ * tactics, an AI manager chooses them from the two line-ups. roundIndex counts from 0.
+ */
+export function playFixture(world, season, divisionIndex, roundIndex, fixture, sideOf) {
+  return resultOf(runFixture(world, season, divisionIndex, roundIndex, fixture, sideOf), divisionIndex, roundIndex);
+}
+
+/** Set a fixture up as a live match state, ready to be stepped a minute at a time. */
+export function startFixture(world, season, divisionIndex, roundIndex, fixture, sideOf) {
+  const { home, away } = fixture;
+  const h = sideOf(home);
+  const a = sideOf(away);
+  return createMatch({
+    home: { clubId: home, name: clubById(world, home).name, lineup: h.lineup, manager: h.manager, tactics: h.tactics || chooseTactics(h.lineup, a.lineup) },
+    away: { clubId: away, name: clubById(world, away).name, lineup: a.lineup, manager: a.manager, tactics: a.tactics || chooseTactics(a.lineup, h.lineup) },
+    seed: hashSeed(world.seed, season, divisionIndex, roundIndex, home, away),
+  });
+}
+
+function runFixture(world, season, divisionIndex, roundIndex, fixture, sideOf) {
+  const state = startFixture(world, season, divisionIndex, roundIndex, fixture, sideOf);
+  while (!state.finished) stepMinute(state);
+  return state;
+}
+
+/** The stored result of a finished match state. */
+export function resultOf(state, divisionIndex, roundIndex) {
+  return { divisionIndex, round: roundIndex + 1, ...matchResult(state) };
+}
+
+/**
+ * Play a full season in every division with AI managers picking the teams,
+ * leaving out anyone suspended or injured.
  * Returns { fixtures, results } where each result carries its division and round.
  * There is no development, transfers or promotion between seasons yet.
  */
 export function simulateSeason(world, season = 1) {
-  const lineups = new Map(
-    world.clubs.map((club) => [club.id, bestLineup(squadOf(world, club.id))]),
-  );
+  const squads = new Map(world.clubs.map((club) => [club.id, squadOf(world, club.id)]));
+  const full = new Map(world.clubs.map((club) => [club.id, bestLineup(squads.get(club.id))]));
+  const byClub = new Map(world.clubs.map((club) => [club.id, []]));
+  const rounds = world.divisions.map((d) => fixturesFor(world, season, d.index));
   const results = [];
   const fixtures = [];
-  for (const division of world.divisions) {
-    fixturesFor(world, season, division.index).forEach((round, roundIndex) => {
-      for (const fixture of round) {
+  for (let roundIndex = 0; roundIndex < rounds[0].length; roundIndex++) {
+    for (const division of world.divisions) {
+      for (const fixture of rounds[division.index][roundIndex]) {
         fixtures.push({ divisionIndex: division.index, round: roundIndex + 1, ...fixture });
-        results.push(
-          playFixture(world, season, division.index, roundIndex, fixture, (id) => lineups.get(id)),
-        );
+        const result = playFixture(world, season, division.index, roundIndex, fixture, (id) => {
+          const missing = unavailable(byClub.get(id), id, roundIndex + 1);
+          const lineup = missing.size ? bestLineup(squads.get(id).filter((p) => !missing.has(p.id))) : full.get(id);
+          return { lineup };
+        });
+        results.push(result);
+        byClub.get(result.homeId).push(result);
+        byClub.get(result.awayId).push(result);
       }
-    });
+    }
   }
   return { fixtures, results };
 }

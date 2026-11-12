@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { measure, measureDivisionGap, measureFormations, TARGETS, inTarget } from '../js/calibrate.js';
+import { measure, measureDivisionGap, measureFormations, measureTactics, TARGETS, inTarget } from '../js/calibrate.js';
 
 const stats = measure(40, 'calibration-test');
 
@@ -77,4 +77,20 @@ test('season leaders look right for a 22-game season', () => {
   assert.ok(stats.avgTopScorerGoals > 11 && stats.avgTopScorerGoals < 26);
   assert.ok(stats.avgTopAssists > 5 && stats.avgTopAssists < 16);
   assert.ok(stats.avgTopRating > 7.0 && stats.avgTopRating < 8.0);
+});
+
+test('cards, injuries and substitutions happen about as often as in real football', () => {
+  assert.ok(stats.yellowsPerTeam > 0.7 && stats.yellowsPerTeam < 2.2, `yellows per team ${stats.yellowsPerTeam.toFixed(2)}`);
+  assert.ok(stats.redsPerMatch > 0.05 && stats.redsPerMatch < 0.25, `reds per match ${stats.redsPerMatch.toFixed(2)}`);
+  assert.ok(stats.injuriesPerMatch > 0.08 && stats.injuriesPerMatch < 0.3, `injuries per match ${stats.injuriesPerMatch.toFixed(2)}`);
+  assert.ok(stats.subsPerTeam > 1.2 && stats.subsPerTeam <= 3);
+  // Injuries, suspensions and substitutions bring more of the squad into play.
+  assert.ok(stats.playersUsedPerClub > 13);
+});
+
+test('no tactical setting is simply better than leaving everything on normal', () => {
+  const ppg = measureTactics(2, 'tactics-test');
+  for (const [name, value] of Object.entries(ppg)) {
+    assert.ok(Math.abs(value - ppg.neutral) < 0.07, `${name}: ${value.toFixed(3)} v ${ppg.neutral.toFixed(3)}`);
+  }
 });

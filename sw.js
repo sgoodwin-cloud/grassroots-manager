@@ -1,6 +1,6 @@
 // Bump VERSION whenever the app changes, together with APP_VERSION in js/app.js: the number after
 // 'grassroots-manager-v' must equal APP_VERSION, or installs fail on purpose (see install below).
-const VERSION = 'grassroots-manager-v1';
+const VERSION = 'grassroots-manager-v2';
 // Every file the app needs offline. Add any new file here (test/game.test.js checks the js files).
 const CORE = [
   './',
@@ -10,6 +10,7 @@ const CORE = [
   './js/app.js',
   './js/game.js',
   './js/store.js',
+  './js/commentary.js',
   './js/world.js',
   './js/player.js',
   './js/team.js',

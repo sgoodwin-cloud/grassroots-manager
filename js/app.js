@@ -1,17 +1,20 @@
 // Grassroots Manager: the screens. All game rules live in game.js and the
 // engine files; this file only draws things and reacts to taps.
 // Bump APP_VERSION together with VERSION in sw.js on every release.
-const APP_VERSION = '1';
+const APP_VERSION = '2';
 
 import {
   newGame, openGame, userClub, userDivision, userLineup, setFormation, autoPick, selectPlayer,
   lineupStrength, clubQuality, userFixtures, nextFixture, playRound, seasonOver, table, positionOf,
   topTen, squadStats, playerStats, summary, squad, roundResults, shortName, positionRating,
-  FORMATIONS, ROUNDS,
+  FORMATIONS, ROUNDS, startMatch, finishRound, userSide, setTactic, lineupProblems, missing,
 } from './game.js';
+import { stepMinute, substitute, replaceInjured, setTactics, playerRating, currentRate, MAX_SUBS } from './match.js';
+import { TACTIC_LABELS } from './team.js';
+import { describe } from './commentary.js';
 import { generateWorld } from './world.js';
 import { overall, attributeBand, familiarity, OUTFIELD_ATTRS, GK_ATTRS, ATTR_LABELS } from './player.js';
-import { SLOTS, listSlots, loadSave, writeSave, deleteSave, persistent } from './store.js';
+import { SLOTS, listSlots, loadSave, writeSave, deleteSave, loadLive, writeLive, persistent } from './store.js';
 
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet');
@@ -22,7 +25,8 @@ const state = {
   slot: null,
   g: null,
   tab: 'home',
-  sub: null, // team | report
+  sub: null, // team | report | live
+  live: null, // the match being watched: { m, mine, feed, paused, reason, speed, pending, done }
   sheet: null,
   division: 3,
   tableView: 'table',
@@ -40,6 +44,19 @@ const chip = (r, digits = 1) => `<span class="rating band-${ratingBand(r)}">${r.
 const formChips = (form) => (form.length ? `<span class="form">${form.map((r) => chip(r)).join('')}</span>` : '<span class="muted small">No games yet</span>');
 const ROLE_NAMES = { GK: 'Goalkeeper', DEF: 'Defender', MID: 'Midfielder', ATT: 'Attacker' };
 const clubName = (id) => state.g.clubs.get(id).name;
+const TACTIC_NAMES = { pressing: 'Pressing', line: 'Defensive line', tempo: 'Tempo' };
+const TACTIC_HELP = {
+  pressing: 'Pressing high wins the ball more often, but tires the team, leaves gaps and gives away more fouls.',
+  line: 'A high line squeezes midfield but is exposed by quick attackers. A deep line protects the goal and blunts your attack.',
+  tempo: 'A fast tempo gets more shots away, less accurately, and is tiring. A slow tempo keeps the ball.',
+};
+/** "Suspended" or "Injured, 2 rounds" for a player who can't play the next match, else ''. */
+function outText(playerId) {
+  const out = missing(state.g, state.g.players.get(playerId).clubId).get(playerId);
+  if (!out) return '';
+  return out.reason === 'suspended' ? 'Suspended' : `Injured, ${out.rounds} round${out.rounds > 1 ? 's' : ''}`;
+}
+const outTag = (playerId) => { const t = outText(playerId); return t ? ` <span class="out">${t}</span>` : ''; };
 const playerName = (id) => state.g.players.get(id).name;
 const fmtDate = (ms) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
@@ -114,19 +131,20 @@ function startNewGameForm(slot, seed = randomCode()) {
 
 function viewNew() {
   const ng = state.ng;
-  const rows = ng.clubs.map(({ club, quality }) => `<button class="pick ${ng.choice === club.id ? 'is-on' : ''}" data-action="choose-club" data-club="${club.id}">
-      <span class="grow">${esc(club.name)}</span><span class="muted small">Team rating</span><b class="num">${quality.toFixed(1)}</b></button>`).join('');
+  const level = (i) => (i < 4 ? ['Easier', 'easy'] : i < 8 ? ['Medium', 'medium'] : ['Hard', 'hard']);
+  const rows = ng.clubs.map(({ club, quality }, i) => `<button class="pick ${ng.choice === club.id ? 'is-on' : ''}" data-action="choose-club" data-club="${club.id}">
+      <span class="grow">${esc(club.name)}</span><span class="level ${level(i)[1]}">${level(i)[0]}</span><b class="num">${quality.toFixed(1)}</b></button>`).join('');
   return `<header class="topbar"><button class="icon-btn" data-action="to-start">Back</button>
       <div class="titles"><div class="club">New game</div><div class="sub">Save ${ng.slot} · Division Three</div></div></header>
     <div class="screen">
       <div class="card"><div class="eyebrow">World</div>
         <div class="code"><strong>${esc(ng.seed)}</strong><span class="muted small" style="flex:1">Every world has 48 different clubs.</span>
         <button class="btn quiet small-btn" data-action="new-world">New world</button></div></div>
-      <div class="section-title">Pick a club. A higher team rating is a stronger squad.</div>
+      <div class="section-title">Pick a club. The number is its team rating: the weakest clubs here usually finish near the bottom, and there is no way to strengthen a squad yet.</div>
       <div class="picks">${rows}</div>
       <div class="card"><div class="eyebrow">Or create your own club</div>
         <input class="field" id="club-name" maxlength="24" autocomplete="off" autocapitalize="words" spellcheck="false" placeholder="Club name" value="${esc(ng.name)}">
-        <p class="note">It takes the place of one of these twelve clubs, chosen at random, and keeps that club’s squad.</p></div>
+        <p class="note">It takes the place of a mid-table club (the sixth strongest here) and keeps that club’s squad.</p></div>
       <div class="sticky-foot">${ng.error ? `<div class="error">${esc(ng.error)}</div>` : ''}
         <button class="btn" data-action="start-game">Start</button></div>
     </div>`;
@@ -148,18 +166,30 @@ async function startGame() {
   state.g = openGame(newGame(options));
   state.slot = ng.slot;
   await persist();
-  enterGame();
+  await enterGame();
   function fail(message) { ng.error = message; render(); }
 }
 
-function enterGame() {
+async function enterGame() {
   state.screen = 'game';
   state.tab = 'home';
   state.sub = null;
   state.sheet = null;
+  state.live = null;
   state.division = userDivision(state.g);
   state.tableView = 'table';
   state.ng = null;
+  // Pick up a match that was being watched when the app was last closed.
+  try {
+    const saved = await loadLive(state.slot);
+    if (saved && saved.round === state.g.save.round && !seasonOver(state.g)) {
+      const m = saved.m;
+      state.live = { m, mine: userSide(state.g, m), feed: saved.feed || [], paused: true, reason: 'Match paused', speed: saved.speed || 1, pending: saved.pending || null, done: m.finished };
+      state.sub = 'live';
+    } else if (saved) {
+      await writeLive(state.slot, null);
+    }
+  } catch (err) { /* no saved match */ }
   render();
 }
 
@@ -169,6 +199,7 @@ function viewGame() {
   const g = state.g;
   if (state.sub === 'team') return viewTeam();
   if (state.sub === 'report') return viewReport();
+  if (state.sub === 'live') return viewLive();
   const s = summary(g);
   const tabs = [['home', 'Home'], ['squad', 'Squad'], ['fixtures', 'Fixtures'], ['table', 'Table'], ['stats', 'Stats']];
   const body = { home: viewHome, squad: viewSquad, fixtures: viewFixtures, table: viewTable, stats: viewStats }[state.tab]();
@@ -210,7 +241,9 @@ function viewHome() {
       <div><span class="tag ${next.atHome ? '' : 'away'}">${next.atHome ? 'HOME' : 'AWAY'}</span></div>
       <div class="opponent">${esc(clubName(next.opponentId))}</div>
       <div class="line"><span>${oppPlace}</span>${clubForm(next.opponentId)}</div>
-      <div class="row"><button class="btn quiet" data-action="team">Team selection</button><button class="btn" data-action="play">Play match</button></div></div>`;
+      ${lineupProblems(g).map((p) => `<div class="error">${esc(p.player.name)} is ${p.reason} and can’t play. Pick a replacement.</div>`).join('')}
+      <button class="btn quiet" data-action="team">Team selection</button>
+      <div class="row"><button class="btn" data-action="watch">Watch match</button><button class="btn quiet" data-action="play">Skip to result</button></div></div>`;
   } else {
     const stats = squadStats(g).filter((x) => x.stats.apps > 0);
     const scorer = stats.slice().sort((a, b) => b.stats.goals - a.stats.goals)[0];
@@ -230,30 +263,54 @@ function viewHome() {
 function viewTeam() {
   const g = state.g;
   const lineup = userLineup(g);
-  const strength = lineupStrength(g);
   const rows = lineup.players.map(({ player, role }, index) => {
     const fam = familiarity(player, role);
     const stats = playerStats(g, player.id);
-    return `<button class="slotrow" data-action="slot" data-index="${index}">
+    const out = outText(player.id);
+    const note = out ? `<small>${out}</small>` : fam === 'natural' ? '' : `<small class="${fam === 'accomplished' ? 'ok' : ''}">${fam === 'accomplished' ? 'can play here' : `out of position (${player.pos})`}</small>`;
+    return `<button class="slotrow ${out ? 'is-out' : ''}" data-action="slot" data-index="${index}">
       <span class="role">${role}</span>
-      <span class="who">${esc(shortName(player.name))}${fam === 'natural' ? '' : `<small class="${fam === 'accomplished' ? 'ok' : ''}">${fam === 'accomplished' ? 'can play here' : `out of position (${player.pos})`}</small>`}</span>
+      <span class="who">${esc(shortName(player.name))}${note}</span>
       <span>${stats.form.length ? chip(stats.form.reduce((a, b) => a + b, 0) / stats.form.length) : ''}</span>
       <span class="val">${positionRating(player, role).toFixed(1)}</span></button>`;
   }).join('');
-  const bench = lineup.bench.slice().sort((a, b) => overall(b) - overall(a)).map((p) => `<button class="slotrow bench" data-action="player" data-player="${p.id}">
-      <span class="role">${p.pos}</span><span class="who">${esc(shortName(p.name))}</span><span></span><span class="val">${overall(p).toFixed(1)}</span></button>`).join('');
+  const picked = new Set(lineup.players.map((x) => x.player.id));
+  const bench = squad(g, g.save.userClubId).filter((p) => !picked.has(p.id))
+    .sort((a, b) => (outText(a.id) ? 1 : 0) - (outText(b.id) ? 1 : 0) || overall(b) - overall(a))
+    .map((p) => `<button class="slotrow bench" data-action="player" data-player="${p.id}">
+      <span class="role">${p.pos}</span><span class="who">${esc(shortName(p.name))}${outText(p.id) ? `<small>${outText(p.id)}</small>` : ''}</span><span></span><span class="val">${overall(p).toFixed(1)}</span></button>`).join('');
+  const t = g.save.lineup.tactics;
+  const changed = ['pressing', 'line', 'tempo'].filter((k) => t[k] !== 0).length;
   return `<header class="topbar"><button class="icon-btn" data-action="close-sub">Back</button>
       <div class="titles"><div class="club">Team selection</div><div class="sub">Tap a player to change him</div></div></header>
     <main class="screen">
       <div class="chips">${Object.keys(FORMATIONS).map((f) => `<button class="chip ${lineup.formation === f ? 'is-on' : ''}" data-action="formation" data-formation="${f}">${f}</button>`).join('')}</div>
       <div class="teamlist">${rows}</div>
-      <div class="strength"><div><b>${strength.gk.toFixed(1)}</b><span>Keeper</span></div><div><b>${strength.def.toFixed(1)}</b><span>Defence</span></div>
-        <div><b>${strength.mid.toFixed(1)}</b><span>Midfield</span></div><div><b>${strength.att.toFixed(1)}</b><span>Attack</span></div></div>
-      <div class="row"><button class="btn quiet" data-action="auto-pick">Auto-pick</button>${seasonOver(g) ? '' : '<button class="btn" data-action="play">Play match</button>'}</div>
+      <div class="row"><button class="btn quiet small-btn" data-action="tactics">Tactics${changed ? ` (${changed} changed)` : ''}</button><button class="btn quiet small-btn" data-action="auto-pick">Auto-pick</button></div>
+      ${seasonOver(g) ? '' : '<div class="row"><button class="btn" data-action="watch">Watch match</button><button class="btn quiet" data-action="play">Skip to result</button></div>'}
       <p class="note">The number on the right is how good the player is in that position. The coloured number is his average rating over his last five games. Changing formation picks the best eleven for it.</p>
-      <div class="section-title">Bench</div>
+      <div class="section-title">Not in the team</div>
       <div class="teamlist">${bench}</div>
     </main>`;
+}
+
+function tacticControls(tactics, action) {
+  return ['pressing', 'line', 'tempo'].map((key) => `<div class="card"><div class="eyebrow">${TACTIC_NAMES[key]}</div>
+      <div class="seg three">${[-1, 0, 1].map((v) => `<button class="${tactics[key] === v ? 'is-on' : ''}" data-action="${action}" data-key="${key}" data-value="${v}">${TACTIC_LABELS[key][v + 1]}</button>`).join('')}</div>
+      <p class="note">${TACTIC_HELP[key]}</p></div>`).join('');
+}
+
+function sheetTactics() {
+  const strength = lineupStrength(state.g);
+  return sheet('Tactics', `${tacticControls(state.g.save.lineup.tactics, 'set-tactic')}
+    <div class="strength"><div><b>${strength.gk.toFixed(1)}</b><span>Keeper</span></div><div><b>${strength.def.toFixed(1)}</b><span>Defence</span></div>
+      <div><b>${strength.mid.toFixed(1)}</b><span>Midfield</span></div><div><b>${strength.att.toFixed(1)}</b><span>Attack</span></div></div>
+    <p class="note">Your eleven before tactics. You can change tactics again during a match you are watching.</p>`);
+}
+
+function sheetProblems() {
+  const list = lineupProblems(state.g).map((p) => `<p><b>${esc(p.player.name)}</b> is ${p.reason}${p.reason === 'injured' ? ` for ${p.rounds} more round${p.rounds > 1 ? 's' : ''}` : ' for this match'}.</p>`).join('');
+  return sheet('Change your team first', `${list}<div class="row"><button class="btn quiet" data-action="fix-auto">Auto-pick</button><button class="btn" data-action="fix-team">Team selection</button></div>`);
 }
 
 function sheetPick(index) {
@@ -267,10 +324,11 @@ function sheetPick(index) {
     .map(({ p, value }) => {
       const at = inTeam.get(p.id);
       const stats = playerStats(g, p.id);
-      const where = at ? (at.index === index ? 'Playing here now' : `In the team at ${at.role}`) : 'On the bench';
-      return `<button class="slotrow ${at && at.index === index ? 'is-current' : ''}" data-action="pick-player" data-index="${index}" data-player="${p.id}">
+      const out = outText(p.id);
+      const where = out || (at ? (at.index === index ? 'Playing here now' : `In the team at ${at.role}`) : 'Not in the team');
+      return `<button class="slotrow ${at && at.index === index ? 'is-current' : ''} ${out ? 'is-out' : ''}" ${out && !(at && at.index === index) ? 'disabled' : ''} data-action="pick-player" data-index="${index}" data-player="${p.id}">
         <span class="role">${p.pos}</span>
-        <span class="who">${esc(shortName(p.name))}<small class="ok">${where}</small></span>
+        <span class="who">${esc(shortName(p.name))}<small class="${out ? '' : 'ok'}">${where}</small></span>
         <span>${stats.form.length ? chip(stats.form.reduce((a, b) => a + b, 0) / stats.form.length) : ''}</span>
         <span class="val">${value.toFixed(1)}</span></button>`;
     }).join('');
@@ -281,7 +339,7 @@ function sheetPick(index) {
 
 function attrTable(groups, attrs) {
   const head = attrs.map((a) => `<th class="a">${ATTR_LABELS[a].slice(0, 3)}</th>`).join('');
-  const body = groups.map(([title, players]) => `<tr class="group"><td colspan="${attrs.length + 2}">${title}</td></tr>` + players.map((p) => `<tr class="tap" data-action="player" data-player="${p.id}"><td class="name">${esc(shortName(p.name))}</td>
+  const body = groups.map(([title, players]) => `<tr class="group"><td colspan="${attrs.length + 2}">${title}</td></tr>` + players.map((p) => `<tr class="tap" data-action="player" data-player="${p.id}"><td class="name">${esc(shortName(p.name))}${outText(p.id) ? ` <span class="out">${outText(p.id).startsWith('S') ? 'SUS' : 'INJ'}</span>` : ''}</td>
       ${attrs.map((a) => `<td class="a band-${attributeBand(p.attrs[a])}">${p.attrs[a]}</td>`).join('')}<td class="num ovr">${overall(p).toFixed(1)}</td></tr>`).join('')).join('');
   return `<div class="tablecard"><table class="attrs"><thead><tr><th>Player</th>${head}<th class="num">Ovr</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -303,11 +361,13 @@ function sheetPlayer(playerId) {
   const attrs = p.pos === 'GK' ? GK_ATTRS : OUTFIELD_ATTRS;
   return sheet(p.name, `
     <p class="muted">${ROLE_NAMES[p.pos]}${p.alt ? `, can also play ${ROLE_NAMES[p.alt].toLowerCase()}` : ''} · Age ${p.age} · Overall ${overall(p).toFixed(1)}</p>
+    ${outText(playerId) ? `<p class="error">${outText(playerId)}</p>` : ''}
     <div class="card"><div class="eyebrow">Attributes</div><div class="attrgrid">${attrs.map((a) => `<div><span>${ATTR_LABELS[a]}</span><span class="rating band-${attributeBand(p.attrs[a])}">${p.attrs[a]}</span></div>`).join('')}</div></div>
     <div class="card"><div class="eyebrow">This season</div>
       <div class="facts"><div><b>${stats.apps}</b><span>Games</span></div><div><b>${stats.goals}</b><span>Goals</span></div><div><b>${stats.assists}</b><span>Assists</span></div>
-      <div><b>${stats.apps ? stats.rating.toFixed(2) : '–'}</b><span>Average rating</span></div><div><b>${stats.apps ? stats.best.toFixed(1) : '–'}</b><span>Best rating</span></div><div><b>${stats.potm}</b><span>Player of the match</span></div></div>
-      <div><span class="muted small">Last five: </span>${formChips(stats.form)}</div></div>`);
+      <div><b>${stats.rated ? stats.rating.toFixed(2) : '–'}</b><span>Average rating</span></div><div><b>${stats.rated ? stats.best.toFixed(1) : '–'}</b><span>Best rating</span></div><div><b>${stats.potm}</b><span>Player of the match</span></div></div>
+      <div><span class="muted small">Last five: </span>${formChips(stats.form)}</div>
+      <p class="note">${stats.starts} start${stats.starts === 1 ? '' : 's'}, ${stats.apps - stats.starts} as a substitute. Cards: ${stats.yellows} yellow, ${stats.reds} red.</p></div>`);
 }
 
 // ---------- Fixtures ----------
@@ -361,7 +421,7 @@ function viewStats() {
   const rows = squadStats(g)
     .sort((a, b) => dir * (a.stats[key] - b.stats[key]) || b.stats.apps - a.stats.apps || overall(b.player) - overall(a.player))
     .map(({ player, stats }) => `<tr class="tap" data-action="player" data-player="${player.id}"><td class="name" style="font-weight:600">${esc(shortName(player.name))}</td><td class="muted">${player.pos}</td>
-      <td class="num">${stats.apps}</td><td class="num">${stats.goals}</td><td class="num">${stats.assists}</td><td class="num">${stats.apps ? chip(stats.rating, 2) : '–'}</td><td class="num">${stats.potm}</td></tr>`).join('');
+      <td class="num">${stats.apps}</td><td class="num">${stats.goals}</td><td class="num">${stats.assists}</td><td class="num">${stats.rated ? chip(stats.rating, 2) : '–'}</td><td class="num">${stats.potm}</td></tr>`).join('');
   const head = STAT_COLUMNS.map(([k, label]) => `<th class="num"><button data-action="sort" data-key="${k}" style="background:none;border:0;padding:6px 0;font:inherit;color:${key === k ? 'var(--pitch)' : 'inherit'}">${label}${key === k ? (dir < 0 ? ' ↓' : ' ↑') : ''}</button></th>`).join('');
   return `<div class="tablecard"><table><thead><tr><th>Player</th><th>Pos</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
     <p class="note">Games, goals, assists, average rating and player-of-the-match awards this season. Tap a heading to sort, or a player for more.</p>`;
@@ -383,9 +443,11 @@ function viewReport() {
   const stats = [['Possession', `${r.stats[0].possession}%`, `${r.stats[1].possession}%`], ['Shots', r.stats[0].shots, r.stats[1].shots], ['On target', r.stats[0].onTarget, r.stats[1].onTarget]]
     .map(([k, a, b]) => `<div class="statrow"><span>${a}</span><span class="muted">${k}</span><span>${b}</span></div>`).join('');
   const lines = r.players[side].map((line) => {
-    const did = [line.g ? `${line.g} goal${line.g > 1 ? 's' : ''}` : '', line.a ? `${line.a} assist${line.a > 1 ? 's' : ''}` : '', line.sv ? `${line.sv} save${line.sv > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
-    return `<tr class="tap" data-action="player" data-player="${line.id}"><td class="muted" style="width:38px">${line.role}</td>
-      <td class="name">${esc(shortName(playerName(line.id)))}${line.id === r.potm ? ' <span class="potm">★</span>' : ''}</td><td class="did">${did}</td><td class="num" style="width:44px">${chip(line.rating)}</td></tr>`;
+    const did = [line.g ? `${line.g} goal${line.g > 1 ? 's' : ''}` : '', line.a ? `${line.a} assist${line.a > 1 ? 's' : ''}` : '', line.sv ? `${line.sv} save${line.sv > 1 ? 's' : ''}` : '',
+      line.sub ? `on ${line.sub}'` : '', line.inj ? `injured ${line.off}'` : line.off && !line.rc ? `off ${line.off}'` : ''].filter(Boolean).join(', ');
+    const cards = `${line.yc ? '<i class="card-y" title="Booked"></i>' : ''}${line.rc ? '<i class="card-r" title="Sent off"></i>' : ''}`;
+    return `<tr class="tap ${line.sub ? 'is-sub' : ''}" data-action="player" data-player="${line.id}"><td class="muted" style="width:38px">${line.sub ? 'SUB' : line.role}</td>
+      <td class="name">${esc(shortName(playerName(line.id)))}${cards}${line.id === r.potm ? ' <span class="potm">★</span>' : ''}</td><td class="did">${did}</td><td class="num" style="width:44px">${line.min >= 15 || line.g ? chip(line.rating) : '<span class="muted">–</span>'}</td></tr>`;
   }).join('');
   const others = roundResults(g, r.divisionIndex, r.round).filter((x) => x !== r)
     .map((x) => `<div><span class="h">${esc(clubName(x.homeId))}</span><b>${x.homeGoals}–${x.awayGoals}</b><span>${esc(clubName(x.awayId))}</span></div>`).join('');
@@ -403,6 +465,159 @@ function viewReport() {
       <div class="card"><div class="eyebrow">Other results</div><div class="others">${others}</div></div>
       ${fresh ? '<button class="btn" data-action="close-sub">Continue</button>' : ''}
     </main>`;
+}
+
+// ---------- Watching a match ----------
+
+const SPEEDS = { 1: 700, 2: 350, 4: 140 }; // milliseconds per match minute
+let ticker = null;
+
+function liveNames() {
+  const { m } = state.live;
+  return { player: (id) => shortName(playerName(id)), club: (side) => m.teams[side].name };
+}
+
+function addFeed(minute, text, kind = '') {
+  state.live.feed.unshift({ minute, text, kind });
+  if (state.live.feed.length > 120) state.live.feed.length = 120;
+}
+
+function beginLive() {
+  const g = state.g;
+  const m = startMatch(g, 'user');
+  if (!m) return false;
+  state.live = { m, mine: userSide(g, m), feed: [], paused: false, reason: null, speed: 1, pending: null, done: false };
+  addFeed(0, `Kick-off: ${m.teams[0].name} v ${m.teams[1].name}.`, 'mark');
+  state.sub = 'live';
+  state.sheet = null;
+  render();
+  schedule();
+  return true;
+}
+
+function schedule() {
+  clearTimeout(ticker);
+  const live = state.live;
+  if (!live || live.paused || live.done || state.sub !== 'live') return;
+  ticker = setTimeout(tick, SPEEDS[live.speed]);
+}
+
+function pauseLive(reason) {
+  const live = state.live;
+  if (!live) return;
+  live.paused = true;
+  live.reason = reason;
+  clearTimeout(ticker);
+  saveLive();
+}
+
+function saveLive() {
+  const live = state.live;
+  if (!live || state.slot == null) return;
+  writeLive(state.slot, { round: state.g.save.round, m: live.m, feed: live.feed.slice(0, 40), speed: live.speed, pending: live.pending }).catch(() => {});
+}
+
+function tick() {
+  const live = state.live;
+  if (!live || live.paused || live.done) return;
+  const { m, mine } = live;
+  const names = liveNames();
+  let stop = null;
+  for (const e of stepMinute(m)) {
+    const text = describe(e, names);
+    if (text) addFeed(e.minute, text, e.type === 'goal' ? 'goal' : e.type === 'red' ? 'red' : '');
+    if (e.type === 'goal' && e.side !== mine) stop = stop || `${m.teams[e.side].name} have scored`;
+    if (e.type === 'red' && e.side === mine) stop = `${names.player(e.playerId)} has been sent off`;
+    if (e.type === 'injury' && e.side === mine) {
+      stop = `${names.player(e.playerId)} is injured`;
+      if (e.needsSub) live.pending = { playerId: e.playerId, role: e.role };
+    }
+  }
+  if (m.minute === 45) {
+    addFeed(45, `Half-time: ${m.teams[0].name} ${m.score[0]}–${m.score[1]} ${m.teams[1].name}.`, 'mark');
+    stop = stop || 'Half-time';
+  }
+  if (m.finished) {
+    addFeed(90, `Full time: ${m.teams[0].name} ${m.score[0]}–${m.score[1]} ${m.teams[1].name}.`, 'mark');
+    live.done = true;
+    live.paused = true;
+    live.reason = 'Full time';
+    saveLive();
+  } else if (stop) {
+    pauseLive(stop);
+    if (live.pending) state.sheet = { type: 'changes' };
+  } else if (m.minute % 10 === 0) {
+    saveLive();
+  }
+  render();
+  schedule();
+}
+
+async function finishLive() {
+  const live = state.live;
+  if (!live || !live.m.finished) return;
+  const result = finishRound(state.g, live.m);
+  await persist();
+  await writeLive(state.slot, null).catch(() => {});
+  state.live = null;
+  state.sub = 'report';
+  state.report = { result, fresh: true };
+  render();
+}
+
+function viewLive() {
+  const live = state.live;
+  const { m, mine } = live;
+  const feed = live.feed.map((f) => `<li class="${f.kind}"><span class="min">${f.minute ? `${f.minute}'` : ''}</span><span>${esc(f.text)}</span></li>`).join('');
+  const controls = live.done
+    ? '<button class="btn" data-action="live-finish">See the report</button>'
+    : `<div class="row"><button class="btn ${live.paused ? '' : 'quiet'}" data-action="live-toggle">${live.paused ? (m.minute ? 'Resume' : 'Kick off') : 'Pause'}</button>
+        <button class="btn quiet" data-action="live-changes">Changes</button></div>
+      <div class="live-speed"><span class="muted small">Speed</span>${[1, 2, 4].map((v) => `<button class="chip ${live.speed === v ? 'is-on' : ''}" data-action="live-speed" data-speed="${v}">${v}×</button>`).join('')}
+        <button class="chip" data-action="live-skip" style="margin-left:auto">Skip to the end</button></div>`;
+  const short = m.teams[mine].eleven.length < 11 ? `<div class="error">You are down to ${m.teams[mine].eleven.length} players.</div>` : '';
+  return `<header class="topbar live-top">
+      <div class="scoreline"><span class="home">${esc(m.teams[0].name)}</span><span class="score">${m.score[0]}–${m.score[1]}</span><span>${esc(m.teams[1].name)}</span></div>
+      <div class="clock">${live.done ? 'Full time' : `${m.minute}'`}</div></header>
+    <div class="live-panel">
+      ${live.paused && live.reason ? `<div class="live-reason">${esc(live.reason)}</div>` : ''}${short}
+      ${controls}
+      <div class="live-stats"><span>${m.minute ? Math.round((m.stats[0].possession / m.minute) * 100) : 50}%</span><span class="muted">Possession</span><span>${m.minute ? 100 - Math.round((m.stats[0].possession / m.minute) * 100) : 50}%</span>
+        <span>${m.stats[0].shots} (${m.stats[0].onTarget})</span><span class="muted">Shots (on target)</span><span>${m.stats[1].shots} (${m.stats[1].onTarget})</span></div>
+    </div>
+    <main class="screen feed-screen"><ul class="feed">${feed}</ul></main>`;
+}
+
+function sheetChanges(s) {
+  const live = state.live;
+  const { m, mine } = live;
+  const team = m.teams[mine];
+  const benchRow = (p, role, action) => `<button class="slotrow" data-action="${action}" data-player="${p.id}">
+      <span class="role">${p.pos}</span><span class="who">${esc(shortName(p.name))}</span><span></span><span class="val">${positionRating(p, role).toFixed(1)}</span></button>`;
+  const byRole = (role) => team.bench.slice().sort((a, b) => positionRating(b, role) - positionRating(a, role));
+
+  // An injured player has gone off: choose who replaces him.
+  if (live.pending) {
+    const { playerId, role } = live.pending;
+    return sheet(`Replace ${shortName(playerName(playerId))}`, `<p class="note">He was playing at ${role}. The number is how good each substitute is there. You have ${team.subsLeft} substitution${team.subsLeft === 1 ? '' : 's'} left.</p>
+      <div class="teamlist">${byRole(role).map((p) => benchRow(p, role, 'live-replace')).join('')}</div>
+      <button class="btn quiet" data-action="live-play-short">Carry on a player short</button>`);
+  }
+  // Choosing who comes on for a player.
+  if (s.off) {
+    const entry = team.eleven.find((x) => x.player.id === s.off);
+    return sheet(`Take off ${shortName(entry.player.name)}`, `<p class="note">Choose who comes on at ${entry.role}. The number is how good each substitute is there.</p>
+      <div class="teamlist">${byRole(entry.role).map((p) => benchRow(p, entry.role, 'live-sub-on')).join('')}</div>
+      <button class="btn quiet" data-action="live-sub-cancel">Back</button>`);
+  }
+  const rows = team.eleven.map((x) => `<button class="slotrow live-row" ${team.subsLeft ? '' : 'disabled'} data-action="live-sub-off" data-player="${x.player.id}">
+      <span class="role">${x.role}</span>
+      <span class="who">${esc(shortName(x.player.name))}${x.yellow ? '<i class="card-y" title="Booked"></i>' : ''}<span class="energy"><i style="width:${Math.round(x.energy * 100)}%" class="${x.energy < 0.6 ? 'low' : ''}"></i></span></span>
+      <span>${chip(playerRating(m, mine, x))}</span><span class="val">${currentRate(x).toFixed(1)}</span></button>`).join('');
+  return sheet('Changes', `<div class="section-title">Substitutions: ${team.subsLeft} of ${MAX_SUBS} left. Tap a player to take him off.</div>
+    <div class="teamlist">${rows}</div>
+    <p class="note">The bar is energy. The coloured number is his rating in this match; the number on the right is how well he is playing now, tiredness included.</p>
+    ${tacticControls(team.tactics, 'live-tactic')}`);
 }
 
 // ---------- Sheets ----------
@@ -430,6 +645,9 @@ function renderSheet() {
   else if (s?.type === 'player') html = sheetPlayer(s.playerId);
   else if (s?.type === 'menu') html = sheetMenu();
   else if (s?.type === 'delete') html = sheetDelete(s.slot);
+  else if (s?.type === 'tactics') html = sheetTactics();
+  else if (s?.type === 'problems') html = sheetProblems();
+  else if (s?.type === 'changes') html = sheetChanges(s);
   $sheet.innerHTML = html;
   $sheet.hidden = !html;
 }
@@ -448,6 +666,7 @@ async function showStart() {
   state.g = null;
   state.slot = null;
   state.sub = null;
+  state.live = null;
   state.sheet = null;
   render();
 }
@@ -458,22 +677,71 @@ const actions = {
   'new-world': () => { startNewGameForm(state.ng.slot); render(); },
   'choose-club': (el) => { state.ng.choice = el.dataset.club; state.ng.error = ''; render(); },
   'start-game': () => startGame(),
-  'to-start': () => showStart(),
+  'to-start': () => { clearTimeout(ticker); if (state.live && !state.live.done) pauseLive('Match paused'); return showStart(); },
   continue: async (el) => {
     const slot = Number(el.dataset.slot);
     const save = await loadSave(slot);
     if (!save) return showStart();
     state.g = openGame(save);
     state.slot = slot;
-    enterGame();
+    await enterGame();
   },
   'ask-delete': (el) => { state.sheet = { type: 'delete', slot: Number(el.dataset.slot) }; renderSheet(); },
   delete: async (el) => { await deleteSave(Number(el.dataset.slot)); await showStart(); },
   tab: (el) => { state.tab = el.dataset.tab; render(); },
   menu: () => { state.sheet = { type: 'menu' }; renderSheet(); },
   team: () => { state.sub = 'team'; render(); },
+  tactics: () => { state.sheet = { type: 'tactics' }; renderSheet(); },
+  'set-tactic': async (el) => { setTactic(state.g, el.dataset.key, Number(el.dataset.value)); renderSheet(); render(); await persist(); },
+  'fix-team': () => { state.sheet = null; state.sub = 'team'; render(); },
+  'fix-auto': async () => { autoPick(state.g); state.sheet = null; render(); await persist(); },
+  watch: () => {
+    if (lineupProblems(state.g).length) { state.sheet = { type: 'problems' }; renderSheet(); return; }
+    beginLive();
+  },
+  'live-toggle': () => {
+    const live = state.live;
+    if (live.paused) { live.paused = false; live.reason = null; render(); schedule(); } else { pauseLive('Paused'); render(); }
+  },
+  'live-speed': (el) => { state.live.speed = Number(el.dataset.speed); render(); schedule(); },
+  'live-changes': () => { if (!state.live.paused) pauseLive('Paused'); state.sheet = { type: 'changes' }; render(); },
+  'live-tactic': (el) => { setTactics(state.live.m, state.live.mine, { [el.dataset.key]: Number(el.dataset.value) }); saveLive(); renderSheet(); },
+  'live-sub-off': (el) => { state.sheet = { type: 'changes', off: el.dataset.player }; renderSheet(); },
+  'live-sub-cancel': () => { state.sheet = { type: 'changes' }; renderSheet(); },
+  'live-sub-on': (el) => {
+    const live = state.live;
+    const event = substitute(live.m, live.mine, state.sheet.off, el.dataset.player);
+    if (event) addFeed(live.m.minute, describe(event, liveNames()));
+    state.sheet = { type: 'changes' };
+    saveLive();
+    render();
+  },
+  'live-replace': (el) => {
+    const live = state.live;
+    const event = replaceInjured(live.m, live.mine, el.dataset.player, live.pending.role);
+    if (event) addFeed(live.m.minute, describe(event, liveNames()));
+    live.pending = null;
+    state.sheet = { type: 'changes' };
+    saveLive();
+    render();
+  },
+  'live-play-short': () => { state.live.pending = null; state.sheet = null; saveLive(); render(); },
+  'live-skip': async () => {
+    const live = state.live;
+    clearTimeout(ticker);
+    // Your assistant takes over the substitutions for the rest of the match.
+    live.pending = null;
+    live.m.teams[live.mine].manager = 'ai-subs';
+    while (!live.m.finished) stepMinute(live.m);
+    await finishLive();
+  },
+  'live-finish': () => finishLive(),
   'close-sub': () => { state.sub = null; state.report = null; render(); },
-  'close-sheet': () => { state.sheet = null; renderSheet(); },
+  'close-sheet': () => {
+    // An injured player still needs replacing: closing the sheet leaves the choice open.
+    state.sheet = null;
+    renderSheet();
+  },
   formation: async (el) => { setFormation(state.g, el.dataset.formation); render(); await persist(); },
   'auto-pick': async () => { autoPick(state.g); render(); await persist(); },
   slot: (el) => { state.sheet = { type: 'pick', index: Number(el.dataset.index) }; renderSheet(); },
@@ -485,6 +753,7 @@ const actions = {
   },
   player: (el) => { state.sheet = { type: 'player', playerId: el.dataset.player }; renderSheet(); },
   play: async () => {
+    if (lineupProblems(state.g).length) { state.sheet = { type: 'problems' }; renderSheet(); return; }
     const result = playRound(state.g);
     if (!result) return;
     await persist();
@@ -518,6 +787,14 @@ document.addEventListener('click', async (event) => {
   if (!action) return;
   busy = true;
   try { await action(el); } finally { busy = false; }
+});
+
+// Leaving the app mid-match pauses it and saves where it had got to.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && state.live && !state.live.paused && !state.live.done) {
+    pauseLive('Match paused');
+    render();
+  }
 });
 
 document.addEventListener('input', (event) => {

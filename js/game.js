@@ -5,12 +5,13 @@
 // so far. Fixtures, tables, form and stats are always worked out, never stored.
 
 import { generateWorld } from './world.js';
-import { FORMATIONS, pickXI, bestLineup, teamStrength, lineupQuality } from './team.js';
-import { fixturesFor, playFixture, tableFromResults } from './league.js';
+import { FORMATIONS, DEFAULT_TACTICS, pickXI, bestLineup, teamStrength, lineupQuality } from './team.js';
+import { fixturesFor, playFixture, startFixture, resultOf, unavailable, tableFromResults } from './league.js';
+import { stepMinute } from './match.js';
 import { playerTotals, leaders, minAppsForRating } from './stats.js';
 import { positionRating } from './player.js';
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const ROUNDS = 22;
 
 // ---------- Saves ----------
@@ -44,7 +45,12 @@ export function newGame({ seed, clubId, customClubName, now = Date.now() }) {
 
 // Each entry upgrades a save from that version to the next. Saves are never wiped.
 const MIGRATIONS = {
-  // 1: (save) => { ...changes for version 2...; save.version = 2; },
+  // Version 2 (M3): tactics are part of your line-up. Older results simply have
+  // no cards, injuries or substitutions in them.
+  1: (save) => {
+    if (save.lineup) save.lineup.tactics = { ...DEFAULT_TACTICS };
+    save.version = 2;
+  },
 };
 
 /** Bring an older save up to the current format. */
@@ -57,10 +63,13 @@ export function migrate(save) {
   return save;
 }
 
-const storeLineup = (lineup) => ({
+const storeLineup = (lineup, tactics = DEFAULT_TACTICS) => ({
   formation: lineup.formation,
   slots: lineup.players.map((x) => ({ playerId: x.player.id, role: x.role })),
+  tactics: { ...tactics },
 });
+
+const cached = (g, key, make) => (key in g.cache ? g.cache[key] : (g.cache[key] = make()));
 
 // ---------- An open game ----------
 
@@ -82,7 +91,8 @@ export function openGame(save) {
     g.squads.get(p.clubId).push(p);
   }
   g.rounds = save.world.divisions.map((d) => fixturesFor(save.world, save.season, d.index));
-  if (!validLineup(g, save.lineup)) save.lineup = storeLineup(bestLineup(squad(g, save.userClubId)));
+  if (!validLineup(g, save.lineup)) save.lineup = storeLineup(bestLineup(available(g, save.userClubId)), save.lineup?.tactics);
+  save.lineup.tactics = { ...DEFAULT_TACTICS, ...(save.lineup.tactics || {}) };
   return g;
 }
 
@@ -106,40 +116,70 @@ function validLineup(g, stored) {
   return Object.keys(count).every((role) => count[role] === shape[role]);
 }
 
+// ---------- Who is available ----------
+
+/** Players a club can't pick for the next round: Map of id -> { reason, rounds }. */
+export function missing(g, clubId) {
+  return cached(g, `missing-${clubId}`, () =>
+    unavailable(g.save.results.filter((r) => r.homeId === clubId || r.awayId === clubId), clubId, g.save.round + 1),
+  );
+}
+
+/** A club's squad without anyone suspended or injured for the next round. */
+export function available(g, clubId) {
+  const out = missing(g, clubId);
+  return out.size ? squad(g, clubId).filter((p) => !out.has(p.id)) : squad(g, clubId);
+}
+
 // ---------- Team selection ----------
 
-/** Your line-up in the form the match engine takes. */
+/** Your line-up in the form the match engine takes. The bench is everyone else who is available. */
 export function userLineup(g) {
   const { formation, slots } = g.save.lineup;
   const players = slots.map((s) => ({ player: g.players.get(s.playerId), role: s.role }));
   const picked = new Set(slots.map((s) => s.playerId));
-  return { formation, players, bench: squad(g, g.save.userClubId).filter((p) => !picked.has(p.id)) };
+  return { formation, players, bench: available(g, g.save.userClubId).filter((p) => !picked.has(p.id)) };
+}
+
+/** Players in your eleven who can't play the next match. The match can't start until this is empty. */
+export function lineupProblems(g) {
+  const out = missing(g, g.save.userClubId);
+  return g.save.lineup.slots
+    .filter((s) => out.has(s.playerId))
+    .map((s) => ({ player: g.players.get(s.playerId), ...out.get(s.playerId) }));
 }
 
 export function lineupFor(g, clubId) {
   if (clubId === g.save.userClubId) return userLineup(g);
-  if (!g.ai.has(clubId)) g.ai.set(clubId, bestLineup(squad(g, clubId)));
-  return g.ai.get(clubId);
+  return cached(g, `ai-${clubId}`, () => bestLineup(available(g, clubId)));
 }
 
-/** Change formation. The best eleven for the new shape is picked for you. */
+/** Change formation. The best available eleven for the new shape is picked for you. */
 export function setFormation(g, formation) {
-  g.save.lineup = storeLineup(pickXI(squad(g, g.save.userClubId), formation));
+  g.save.lineup = storeLineup(pickXI(available(g, g.save.userClubId), formation), g.save.lineup.tactics);
 }
 
-/** Pick the best eleven for the current formation. */
+/** Pick the best available eleven for the current formation. */
 export function autoPick(g) {
   setFormation(g, g.save.lineup.formation);
+}
+
+/** Set one of your tactics: 'pressing', 'line' or 'tempo', to -1, 0 or 1. */
+export function setTactic(g, key, value) {
+  if (!(key in DEFAULT_TACTICS)) return;
+  g.save.lineup.tactics[key] = Math.max(-1, Math.min(1, Math.round(value)));
 }
 
 /**
  * Put a player into a slot. If he is already in the eleven, the two players
  * swap places; otherwise the player he replaces drops to the bench.
+ * Suspended and injured players can't be picked.
  */
 export function selectPlayer(g, slotIndex, playerId) {
   const slots = g.save.lineup.slots;
   const player = g.players.get(playerId);
   if (!slots[slotIndex] || !player || player.clubId !== g.save.userClubId) return false;
+  if (missing(g, g.save.userClubId).has(playerId)) return false;
   const other = slots.findIndex((s) => s.playerId === playerId);
   if (other === slotIndex) return true;
   if (other >= 0) slots[other].playerId = slots[slotIndex].playerId;
@@ -179,32 +219,64 @@ export function nextFixture(g) {
   return seasonOver(g) ? null : userFixtures(g)[g.save.round];
 }
 
+const sideFor = (g, manager) => (id) =>
+  id === g.save.userClubId
+    ? { lineup: userLineup(g), tactics: g.save.lineup.tactics, manager }
+    : { lineup: lineupFor(g, id) };
+
 /**
- * Play the next round in every division. Your match uses your line-up; AI
- * managers pick everyone else's. Returns your result.
+ * Kick off your next match and return its live state, to be played with
+ * stepMinute() and finished with finishRound(). manager is 'user' when you are
+ * watching and making the changes yourself, or 'ai-subs' to let your assistant
+ * make the substitutions. Returns null if the season is over or your eleven
+ * includes someone who can't play.
  */
-export function playRound(g, now = Date.now()) {
-  if (seasonOver(g)) return null;
+export function startMatch(g, manager = 'user') {
+  if (seasonOver(g) || lineupProblems(g).length) return null;
   const roundIndex = g.save.round;
-  let mine = null;
+  const d = userDivision(g);
+  const fixture = g.rounds[d][roundIndex].find((f) => f.home === g.save.userClubId || f.away === g.save.userClubId);
+  return startFixture(g.world, g.save.season, d, roundIndex, fixture, sideFor(g, manager));
+}
+
+/** Which side of a live match is yours: 0 for home, 1 for away. */
+export const userSide = (g, state) => (state.teams[0].clubId === g.save.userClubId ? 0 : 1);
+
+/**
+ * Record your finished match and play the rest of the round in every division.
+ * Returns your result.
+ */
+export function finishRound(g, state, now = Date.now()) {
+  if (!state.finished || seasonOver(g)) return null;
+  const roundIndex = g.save.round;
+  const mine = resultOf(state, userDivision(g), roundIndex);
+  const others = [];
   g.rounds.forEach((rounds, divisionIndex) => {
     for (const fixture of rounds[roundIndex]) {
-      const result = playFixture(g.world, g.save.season, divisionIndex, roundIndex, fixture, (id) =>
-        lineupFor(g, id),
-      );
-      g.save.results.push(result);
-      if (result.homeId === g.save.userClubId || result.awayId === g.save.userClubId) mine = result;
+      if (fixture.home === mine.homeId && fixture.away === mine.awayId) continue;
+      others.push(playFixture(g.world, g.save.season, divisionIndex, roundIndex, fixture, sideFor(g, 'ai')));
     }
   });
+  g.save.results.push(mine, ...others);
   g.save.round++;
   g.save.updatedAt = now;
   g.cache = {};
   return mine;
 }
 
-// ---------- Tables and stats (all derived) ----------
+/**
+ * Skip straight to the result: your assistant makes the substitutions, and
+ * your tactics stay as you set them. Returns your result, or null if the
+ * match can't start.
+ */
+export function playRound(g, now = Date.now()) {
+  const state = startMatch(g, 'ai-subs');
+  if (!state) return null;
+  while (!state.finished) stepMinute(state);
+  return finishRound(g, state, now);
+}
 
-const cached = (g, key, make) => (key in g.cache ? g.cache[key] : (g.cache[key] = make()));
+// ---------- Tables and stats (all derived) ----------
 
 export const divisionResults = (g, divisionIndex) =>
   cached(g, `results-${divisionIndex}`, () => g.save.results.filter((r) => r.divisionIndex === divisionIndex));
@@ -232,7 +304,7 @@ export function topTen(g, divisionIndex, key) {
   });
 }
 
-const NO_STATS = { apps: 0, goals: 0, assists: 0, rating: 0, best: 0, potm: 0, cleanSheets: 0, form: [] };
+const NO_STATS = { apps: 0, starts: 0, rated: 0, goals: 0, assists: 0, rating: 0, best: 0, potm: 0, cleanSheets: 0, yellows: 0, reds: 0, form: [] };
 
 /** One row per player in your squad with his season totals. */
 export function squadStats(g, clubId = g.save.userClubId) {
@@ -272,4 +344,4 @@ export function shortName(name) {
   return parts.length > 1 ? `${parts[0][0]}. ${parts.slice(1).join(' ')}` : name;
 }
 
-export { positionRating, FORMATIONS };
+export { positionRating, FORMATIONS, DEFAULT_TACTICS };
